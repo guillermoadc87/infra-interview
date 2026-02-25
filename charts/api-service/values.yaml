@@ -1,0 +1,15 @@
+replicaCount: 2
+
+image:
+  repository: api-service
+  tag: latest
+  pullPolicy: Never  # Using local images for interview
+
+service:
+  type: ClusterIP
+  port: 8080
+
+env:
+  DB_HOST: "postgres"
+  DB_PASSWORD: "postgres"
+  PORT: "8080"

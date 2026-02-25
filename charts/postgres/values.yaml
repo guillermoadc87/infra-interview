@@ -1,0 +1,16 @@
+replicaCount: 1
+
+image:
+  repository: postgres
+  tag: 15-alpine
+
+service:
+  port: 5432
+
+env:
+  POSTGRES_PASSWORD: "postgres"
+  POSTGRES_USER: "postgres"
+
+initDatabases:
+  - orders
+  - inventory

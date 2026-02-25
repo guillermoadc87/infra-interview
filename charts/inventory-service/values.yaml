@@ -1,0 +1,15 @@
+replicaCount: 1
+
+image:
+  repository: inventory-service
+  tag: latest
+  pullPolicy: Never  # Using local images for interview
+
+service:
+  type: ClusterIP
+  port: 8081
+
+env:
+  DB_HOST: "postgres"
+  DB_PASSWORD: "postgres"
+  PORT: "8081"

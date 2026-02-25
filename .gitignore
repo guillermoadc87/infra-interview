@@ -1,0 +1,42 @@
+# OpenTofu / Terraform
+.terraform/
+.opentofu/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+*.tfvars
+!example.tfvars
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.pem
+*.key
+secrets.yaml
+*.env
+
+# Build artifacts
+apps/*/api-service
+apps/*/inventory-service
+
+# internal
+internal/
