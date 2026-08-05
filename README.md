@@ -31,6 +31,26 @@ Select **ONE** path that best matches your interests and expertise:
 
 ---
 
+## Tips for Success
+
+Please read this section — it reflects what we actually value, and it's how the strongest submissions stand apart. A real engineer on our team reviews every one of these by hand.
+
+- **Do one path. Really.** One focused, finished path beats four half-finished ones every single time. "Choose ONE" is not a suggestion or a floor to exceed — it's the exercise. Breadth is not the flex here; a change we could confidently merge is. Depth over surface area.
+
+- **Respect the reviewer's time — that's the whole point.** A human reads this, and reviewer attention is the scarcest thing on our team. Handing us thousands of lines across every domain, with no shared context, isn't generosity — it lands on someone's desk as hours of review load and unowned risk. Scope this like a pull request you'd hand a teammate who then has to own it forever. Would they thank you for it?
+
+- **Finish what you start, and verify it for real.** One thing taken across the finish line beats five things left at 80%. "Verified" means you ran it and watched it work end-to-end — not "the pods started." If you claim something works, assume we'll check. An honest "I ran out of time for X" earns more trust than an overclaim we catch, because one overclaim makes us re-check everything else you said.
+
+- **Don't squash or curate your commits.** We read your history to understand *how* you work, not just what you landed. Small, real, in-order commits — including the dead ends, the reverts, and the "oops, fix" — tell us more than a tidy narrative. Show your actual thinking.
+
+- **Never fabricate or mask.** We would take a sloppy, honest history over a polished, fabricated one every time. Don't invent verification you didn't run, don't dress up unfinished work as done, and don't manufacture a clean story after the fact. Honesty is a hard requirement; we notice, and it's the fastest way to a no.
+
+- **AI and agents are welcome — but own what you submit.** Use the tools you'd use on the job. Two conditions: tell us what you used (a short note in `SOLUTION.md` is plenty), and be ready to explain and defend any line of it. We're hiring you, not your model — if you couldn't walk a reviewer through why the code does what it does, don't submit it. Using an agent to generate breadth you can't personally stand behind is exactly what we're screening against.
+
+**In short:** a single, finished, honestly-documented path that respects our time will always beat a large, impressive-looking, unfinished one. Optimize for a reviewer's confident "yes."
+
+---
+
 ## Prerequisites
 
 - [Colima](https://github.com/abiosoft/colima) installed
@@ -80,7 +100,7 @@ If anything is unclear or you encounter issues with the environment setup, pleas
 ## Notes
 
 - You're not expected to complete everything perfectly in 3-4 hours
-- We value working code over perfect code
-- Document what you would improve given more time
-- Feel free to add tools or technologies you think are appropriate
-- The goal is to simulate real platform engineering work
+- We value working code over perfect code — and a finished slice over a broad, unfinished one
+- Document what you would improve given more time (this is where breadth belongs — as a written plan, not as half-built code)
+- Feel free to add tools or technologies you think are appropriate *within your chosen path*
+- The goal is to simulate real platform engineering work — including scoping it like real work
