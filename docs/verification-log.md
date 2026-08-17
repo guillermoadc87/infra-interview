@@ -135,3 +135,155 @@ URL differed; `scripts/set-owner.sh` is what stamps the real one.
 An early attempt to serve the repo over dumb HTTP (`python3 -m http.server` plus
 `git update-server-info`) failed with `failed to list refs: unexpected EOF` —
 Argo CD's git client needs the smart protocol, hence `git daemon`.
+
+---
+
+# Round 2 — three clusters, previews, and the full promotion ladder
+
+## 5. One label, three clusters
+
+`staging` and `prod` were created and registered. Nothing else was done; the
+ApplicationSets noticed and generated everything:
+
+```
+NAME                        ENV       SYNC        HEALTH        AUTOSYNC
+api-service-dev             dev       Synced      Healthy       true
+api-service-staging         staging   OutOfSync   Missing       true
+api-service-prod            prod      OutOfSync   Missing       <none>     <-- no automated sync
+postgres-staging            staging   Synced      Healthy       true
+vault-staging               staging   Synced      Healthy       true
+postgres-prod               prod      OutOfSync   Missing       <none>
+```
+
+`AUTOSYNC <none>` on every prod Application is the `templatePatch` working: the
+`automated` block is withheld for prod, so production cannot self-deploy.
+
+## 6. PR previews (trunk-based development)
+
+PR #1 on `feat/preview-demo`, labelled `preview`:
+
+```
+$ kubectl --context colima-dev -n pr-feat-preview-demo get pods
+api-service-feat-preview-demo-6ffccf9f95-nlbqb         1/1  Running
+inventory-service-feat-preview-demo-6ffc98cb98-tcrkg   1/1  Running
+postgres-feat-preview-demo-77cbddcc66-64225            1/1  Running
+```
+
+The preview serves the PR's own code; dev is untouched:
+
+```
+PREVIEW  {"preview":"hello-from-pr","status":"ok","version":"2d20925"}
+DEV      {"status":"ok","version":"15bdb10"}          <-- no marker, different build
+```
+
+And the `replacements` rewiring works — `DB_HOST` follows the suffixed Service:
+
+```
+DB_HOST=postgres-feat-preview-demo
+ENVIRONMENT=preview
+```
+
+## 7. Promotion moves the artifact, not a rebuild
+
+```
+dev     digest: sha256:d5255285e82b5d8f88243c8bea93f05d0ed16b3b51510cdda0fafe6edc0632c3
+staging digest: sha256:d5255285e82b5d8f88243c8bea93f05d0ed16b3b51510cdda0fafe6edc0632c3
+IDENTICAL
+```
+
+Image Updater then wrote the staging tag to git and staging converged with **2
+replicas** (staging says 2, dev says 1):
+
+```
+Processing results: applications=4 images_considered=4 images_updated=2 errors=0
+```
+
+`applications=4` is dev + staging for both services. **Prod is absent** — the
+label selector excludes it.
+
+## 8. Production is gated twice, and both gates held
+
+Promoting to prod opened **PR #3** instead of deploying, with a reviewable diff:
+
+```
+gitops/apps/api-service/envs/prod/kustomization.yaml  +1/-1
+gitops/apps/api-service/envs/prod/settings.yaml       +3/-5
+```
+
+After **merging** that PR, prod was still not deployed:
+
+```
+api-service-prod   OutOfSync   Missing
+$ kubectl --context colima-prod get pods -A | grep -v kube-system
+(nothing)
+```
+
+Only an explicit sync deployed it, at **3 replicas** (prod 3, staging 2, dev 1).
+
+## 9. The config taxonomy, proven on live clusters
+
+After promoting staging -> prod:
+
+| setting | category | staging | prod | promoted? |
+|---|---|---|---|---|
+| image version | 1 | 15bdb10 | 15bdb10 | **yes** (same digest) |
+| replicas | 2 | 2 | 3 | no |
+| `FEATURE_ORDER_LIMIT` | 4 | 100 | **100** (was 25) | **yes** |
+| `PAYMENTS_URL` | 3 | `payments.sandbox.example.com` | **`payments.example.com`** | **no** |
+| `LOG_LEVEL` | 3 | debug | info | no |
+| `ENVIRONMENT` | 3 | staging | prod | no |
+
+The promotion carried the business setting into production and **did not drag the
+sandbox payment endpoint with it**. That is the structural guarantee the layout
+exists to provide, observed rather than argued.
+
+## Bugs this round surfaced (all fixed, all found by running it)
+
+1. **Per-job tag race.** Each matrix job ran its own `date -u`, so one commit
+   produced tags one second apart per service. `promote --service all` failed with
+   `inventory-service:dev-...135033Z-eeb5c3b: not found`. The first build had
+   landed both jobs in the same second, which is why it hid. Tags are now computed
+   once per build.
+2. **Duplicate PreSync Job name.** Both services named their gate
+   `wait-for-postgres` and both deploy into `shop`, so two Applications owned one
+   resource. `HookSucceeded` deletion masked it.
+3. **PR head vs merge commit.** On `pull_request`, `actions/checkout` gives the
+   merge commit, so `git rev-parse HEAD` was not the PR head the appset derives
+   its tag from.
+4. **Path filter vs preview completeness.** A preview pins *both* services at
+   `pr-<sha>`, but the filter only rebuilt the changed one, so the other had no
+   image at that tag. Preview PRs now build the whole stack.
+5. **sync-wave deadlock.** Argo CD publishes **no health for ApplicationSet
+   resources** (the field is empty), so a `sync-wave: 10` appset waited forever on
+   `waiting for healthy state of ApplicationSet/platform-helm` and was never
+   created.
+6. **`pullRequest.labels` misplaced.** Belongs under `github`. Valid YAML,
+   rejected by the API server. `gitops-validate` now checks appsets against the
+   real CRD schema and reproduces this exact error.
+7. **`slice` on a string.** `slice .head_sha 0 7` fails with "list should be type
+   of slice or array but string" and the appset silently generated zero
+   Applications. The generator already provides `head_short_sha_7`.
+8. **`destination.namespace` is not a namespace override.** The composed bases
+   hardcode `shop`/`platform`, which survived into the manifests; the preview
+   AppProject correctly refused them. Needs the kustomize namespace transformer.
+9. **PreSync gate deadlocks inside one Application.** A preview bundles its own
+   postgres, and a PreSync hook runs before that postgres can be created. Both
+   gate pods sat Running while nothing else was applied. Previews use sync waves.
+10. **`kustomize edit set image` destroys comments** and reformats every list,
+    turning a promotion PR into 20 lines of noise. Replaced with a surgical edit
+    that produces a one-line diff.
+
+## Still not verified
+
+- **Rollback has not been staged.** The reasoning stands on the mechanism observed
+  here ("newest allowed tag wins", watched working three times), but no rollback
+  was performed.
+- **`inventory-service` was not promoted to prod** — only `api-service`, to keep
+  the ladder demonstration short.
+- **GitHub Environment reviewer gates are not configured.** `promote.yml`
+  references environments `staging` and `prod`, but neither has required
+  reviewers, so the prod gate is currently the PR review plus the manual sync,
+  not a GitHub approval step.
+- One repo setting had to be changed by hand: **Allow GitHub Actions to create and
+  approve pull requests** was off, so `gh pr create` failed *after* the retag had
+  already happened. Enabled via the API.
