@@ -70,10 +70,18 @@ spec:
       # live and rendered were byte-identical on every field we set, yet the
       # StatefulSet stayed OutOfSync.
       #
-      # Ignoring an immutable field costs nothing: a diff there could not be
-      # actioned anyway. Changing it requires recreating the StatefulSet, which is
-      # a deliberate migration, not a sync. Paired with RespectIgnoreDifferences
-      # below so selfHeal honours it too.
+      # Ignoring an immutable field costs nothing for DIFFING: a difference there
+      # could not be actioned anyway, since changing it requires recreating the
+      # StatefulSet.
+      #
+      # It must NOT be paired with RespectIgnoreDifferences, though. That option
+      # also strips the field from the manifest Argo CD APPLIES -- harmless for a
+      # resource that already exists, fatal for one being created. Staging hit
+      # exactly that: the StatefulSet was deleted for the file-storage migration,
+      # and the recreate failed with
+      #   spec.template.spec.containers[0].volumeMounts[0].name: Not found: "data"
+      # because volumeClaimTemplates had been stripped, leaving the volumeMount
+      # with no source. Dev never showed it -- its StatefulSet already existed.
       ignoreDifferences:
         - group: apps
           kind: StatefulSet
@@ -85,7 +93,6 @@ spec:
           - PrunePropagationPolicy=foreground
           - PruneLast=true
           - ServerSideApply=true
-          - RespectIgnoreDifferences=true
         retry:
           limit: 5
           backoff:
