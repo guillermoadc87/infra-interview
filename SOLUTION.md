@@ -2,7 +2,7 @@
 
 **Candidate Name**: Guillermo Diaz
 **Chosen Path**: Path 4 — CI/CD & GitOps
-**Time Spent**: ~4 hours
+**Time Spent**: ~5 hours
 
 ## Summary
 
@@ -226,27 +226,72 @@ argocd app list
   "no image outside base" rule was written too broadly to allow the PreSync hook
   Job's postgres image.
 
+### The full loop, verified end to end
+
+This is the claim the path asks for, and it ran:
+
+| step | evidence |
+|---|---|
+| commit | `744a5be` pushed to `main` |
+| CI | run `31987247191` **success** — `detect changes`, `build api-service`, `build inventory-service` |
+| registry | `ghcr.io/guillermoadc87/api-service:dev-20260817T021244Z-744a5be`, and `linux/amd64` **+ `linux/arm64`** confirmed via the registry API |
+| Image Updater | `images_updated=2 errors=0`, then `git push origin main` |
+| git | commits `c95bdd7` / `30be1d4` authored by `argocd-image-updater <noreply@argoproj.io>`, moving `images[].newTag` in the dev overlays |
+| Argo CD | synced to `30be1d4` |
+| runtime | `api-service` and `inventory-service` both `1/1 Running` |
+
+And the running code is provably the code CI built:
+
+```
+$ curl localhost:18080/healthz
+{"status":"ok","version":"744a5be"}          # == the commit CI built
+
+$ curl localhost:18080/readyz
+{"db":"ok","status":"ok","version":"744a5be"}
+
+$ curl -X POST localhost:18080/orders -d '{"product_id":1,"quantity":2,"customer_id":"verify-e2e"}'
+$ curl localhost:18080/orders/1
+{"id":1,"product_id":1,"quantity":2,"customer_id":"verify-e2e","status":"pending",...}
+
+# category 4 is genuinely enforced: dev's FEATURE_ORDER_LIMIT is 100
+$ curl -X POST localhost:18080/orders -d '{"product_id":1,"quantity":500,...}'
+http=400
+```
+
+**The CI feedback-loop guard also proved itself.** Image Updater's two write-back
+commits triggered `gitops-validate` (correct — `gitops/**` changed) and **did not
+trigger `ci`**. Without `paths-ignore: gitops/**` that commit would have started a
+build, which would have pushed an image, which would have triggered Image Updater
+again.
+
+At no point did I run `kubectl apply`, `helm`, or `docker build` to deploy
+anything. The only imperative actions were bootstrapping Argo CD and registering
+the cluster.
+
 ### What I did NOT verify — stated plainly
 
-- **No GitHub Actions run has executed.** Pushing `.github/workflows/*` was
-  rejected because the OAuth token lacks the `workflow` scope. The workflows are
-  authored, locally YAML-validated, and their shell logic was run by hand against
-  this repo — but **CI has never run, no image has been built or pushed, and the
-  Image Updater write-back has never fired.** The end-to-end loop
-  (code → CI → GHCR → Image Updater → git → sync) is therefore **unproven**.
-- **`api-service` currently fails with `InvalidImageName`** — correct behaviour,
-  since no image exists at the referenced tag yet.
 - **staging and prod clusters were never created.** Only `hub` and `dev` VMs ran.
-  Their manifests exist and render, but the label mechanism has been demonstrated
-  across one environment, not three.
-- **The promotion workflow and the rollback procedure have not been executed.**
-  The rollback reasoning above is derived from how the pieces compose, not from a
-  rollback I performed.
-- **Verification used a locally-served git repo.** The fork did not exist when the
-  Argo CD machinery was verified, so the repo was served to the VMs over
-  `git://` on a throwaway branch. Same root app, same ApplicationSets, same
-  overlays — only the URL differed. Argo CD has since been repointed at GitHub and
-  re-synced successfully.
+  Their manifests exist, render, and are CI-validated, but the label mechanism has
+  been demonstrated across one environment rather than three.
+- **The promotion workflow has not been executed**, so `prod-*`/`staging-*` retagging
+  and the GitHub Environment reviewer gate are authored and unrun.
+- **The rollback procedure has not been executed.** The reasoning about `git revert`
+  being undone by Image Updater follows from the mechanism ("newest allowed tag
+  wins") and from watching that mechanism work, but I did not stage a rollback.
+- **Early Argo CD verification used a locally-served git repo**, because the fork
+  did not exist yet — the repo was served to the VMs over `git://` on a throwaway
+  branch. Same root app, same ApplicationSets, same overlays; only the URL
+  differed. Everything in the table above is from the real GitHub path.
+
+### A bug this process found in my own work
+
+`postgres-credentials` was created only in the `platform` namespace, but the
+applications run in `shop`, and Secrets are namespace-scoped — so
+`inventory-service` failed with `CreateContainerConfigError: secret
+"postgres-credentials" not found`. The credential is needed in both namespaces.
+Fixed in `gitops/bootstrap/spoke/postgres-credentials.example.yaml`, and it is a
+concrete argument for External Secrets: the right fix is one backend key synced
+into each namespace, not a human copying a Secret twice.
 
 ---
 
@@ -282,11 +327,7 @@ argocd app list
 
 ## Future Improvements
 
-1. **Close the loop and prove it.** Grant the `workflow` scope, let CI run, watch
-   Image Updater commit a tag and Argo CD sync it. This is the one piece of the
-   design that is currently asserted rather than demonstrated, and it is the most
-   important one.
-2. **Bring up staging and prod** to show one label selecting across three clusters
+1. **Bring up staging and prod** to show one label selecting across three clusters
    and to exercise the promotion ladder end to end.
 3. **Secrets via External Secrets + Vault**, removing the one out-of-band step and
    making cluster registration genuinely the only manual action.
