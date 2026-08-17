@@ -31,10 +31,50 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       services: ${{ steps.detect.outputs.services }}
+      # Tags are computed ONCE here and shared by every matrix job.
+      #
+      # They used to be computed inside each build job, so two parallel jobs ran
+      # `date -u` independently and one commit produced
+      # dev-...135032Z-eeb5c3b for one service and dev-...135033Z-eeb5c3b for the
+      # other. One second apart, so it usually looked fine -- and it silently
+      # broke promoting both services as a unit, because no single tag named the
+      # build. A tag must identify a BUILD, not a job.
+      owner: ${{ steps.tag.outputs.owner }}
+      sha: ${{ steps.tag.outputs.sha }}
+      dev_tag: ${{ steps.tag.outputs.dev_tag }}
+      pr_tag: ${{ steps.tag.outputs.pr_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GHCR requires a lowercase namespace.
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          # On a pull_request event, actions/checkout checks out the MERGE commit,
+          # so `git rev-parse HEAD` is NOT the PR head. The preview ApplicationSet
+          # derives its image tag from the PR head SHA, so using HEAD here would
+          # produce a tag no preview ever looks for.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            sha="$(echo '${{ github.event.pull_request.head.sha }}' | cut -c1-7)"
+          else
+            sha="$(git rev-parse --short=7 HEAD)"
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          # Fixed-width UTC timestamp so LEXICAL order == chronological order.
+          # Image Updater's `alphabetical` strategy sorts tags as strings and takes
+          # the last, so a monotonic counter would break at 9 -> 10 while this
+          # cannot.
+          echo "dev_tag=dev-$(date -u +%Y%m%dT%H%M%SZ)-${sha}" >> "$GITHUB_OUTPUT"
+          # PR previews key on the head short SHA alone -- no timestamp, because
+          # the preview ApplicationSet must derive the identical string from the
+          # commit. Deliberately NOT dev-prefixed, so Image Updater's dev regex
+          # can never roll an unreviewed PR build into the dev environment.
+          echo "pr_tag=pr-${sha}" >> "$GITHUB_OUTPUT"
+
       - id: detect
         shell: bash
         run: |
@@ -102,34 +142,6 @@ jobs:
           go test ./... -race -covermode=atomic -coverprofile=coverage.out
           go tool cover -func=coverage.out | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          # GHCR requires a lowercase namespace.
-          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-          # On a pull_request event, actions/checkout checks out the MERGE commit,
-          # so `git rev-parse HEAD` is NOT the PR head. The preview ApplicationSet
-          # derives its image tag from the PR head SHA, so using HEAD here would
-          # produce a tag that no preview ever looks for.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            sha="$(echo '${{ github.event.pull_request.head.sha }}' | cut -c1-7)"
-          else
-            sha="$(git rev-parse --short=7 HEAD)"
-          fi
-          # Fixed-width UTC timestamp so that LEXICAL order == chronological
-          # order. Image Updater's `alphabetical` strategy sorts tags as strings
-          # and takes the last, so a monotonic counter would break at 9 -> 10
-          # while this cannot.
-          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
-          echo "dev_tag=dev-$(date -u +%Y%m%dT%H%M%SZ)-${sha}" >> "$GITHUB_OUTPUT"
-          # PR previews are keyed on the head short SHA alone -- no timestamp.
-          # The preview ApplicationSet computes this same string from the PR head,
-          # so the tag must be derivable from the commit and nothing else.
-          # Deliberately NOT `dev-`-prefixed: Image Updater's dev regex must never
-          # match an unreviewed PR build and roll it into the dev environment.
-          echo "pr_tag=pr-${sha}" >> "$GITHUB_OUTPUT"
-
       - uses: docker/setup-buildx-action@v3
 
       # Pushes on PRs too, so opening a pull request produces a previewable
@@ -153,9 +165,9 @@ jobs:
           push: true
           tags: >-
             ${{ github.event_name == 'pull_request'
-                && format('ghcr.io/{0}/{1}:{2}', steps.meta.outputs.owner, matrix.service, steps.meta.outputs.pr_tag)
-                || format('ghcr.io/{0}/{1}:{2}', steps.meta.outputs.owner, matrix.service, steps.meta.outputs.dev_tag) }}
-          build-args: VERSION=${{ steps.meta.outputs.sha }}
+                && format('ghcr.io/{0}/{1}:{2}', needs.changes.outputs.owner, matrix.service, needs.changes.outputs.pr_tag)
+                || format('ghcr.io/{0}/{1}:{2}', needs.changes.outputs.owner, matrix.service, needs.changes.outputs.dev_tag) }}
+          build-args: VERSION=${{ needs.changes.outputs.sha }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
           # Keeps the OCI index to exactly the two real platforms; provenance
@@ -171,6 +183,6 @@ jobs:
             echo "### ${{ matrix.service }}"
             echo "| field | value |"
             echo "|---|---|"
-            echo "| tag | \`${{ steps.meta.outputs.dev_tag }}\` |"
+            echo "| tag | \`${{ needs.changes.outputs.dev_tag }}\` |"
             echo "| digest | \`${{ steps.push.outputs.digest }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
