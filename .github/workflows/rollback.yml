@@ -1,0 +1,130 @@
+name: rollback
+
+# ROLLBACK IS A ROLL FORWARD.
+#
+# `git revert` does NOT roll back dev or staging, and this is the single most
+# counterintuitive property of the whole pipeline. The rule those environments
+# run on is "the newest allowed tag in the registry wins": Argo CD Image Updater
+# polls GHCR, finds the newest tag matching the environment's regex, and writes
+# it into git. Revert the commit that bumped the tag and the next poll simply
+# writes it straight back -- the revert is undone automatically, and the history
+# reads as the tooling fighting the operator, because it is.
+#
+# So the only durable way to change what is deployed is to make a KNOWN-GOOD
+# image the newest one. This workflow retags a previously-good digest under a
+# fresh, higher-sorting tag for the same environment. Recovery time is one Image
+# Updater interval, the audit trail is forward-only, and it is the same mechanism
+# as promotion rather than a second thing to learn.
+#
+# PRODUCTION does not need this: prod has no Image Updater and syncs manually, so
+# `git revert` plus a sync is a true rollback there. That asymmetry is a large
+# part of why prod is gated the way it is.
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service to roll back
+        type: choice
+        options: [api-service, inventory-service, all]
+        required: true
+      environment:
+        description: Environment to roll back
+        type: choice
+        options: [dev, staging]
+        required: true
+      good_tag:
+        description: "A known-good tag to return to, e.g. dev-20260817T135450Z-15bdb10"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: validate the request
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.p.outputs.services }}
+      owner: ${{ steps.p.outputs.owner }}
+    steps:
+      - id: p
+        shell: bash
+        env:
+          TAG: ${{ inputs.good_tag }}
+          ENVN: ${{ inputs.environment }}
+          SVC: ${{ inputs.service }}
+        run: |
+          set -euo pipefail
+          # The replacement tag must match the environment's own allow-tags regex,
+          # so the good tag has to belong to that environment to begin with.
+          if [[ "$TAG" != ${ENVN}-* ]]; then
+            echo "::error::'$TAG' is not a ${ENVN} tag -- rolling back ${ENVN} needs a ${ENVN}- tag, otherwise Image Updater will never select the replacement"
+            exit 1
+          fi
+          if [[ ! "$TAG" =~ ^[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}$ ]]; then
+            echo "::error::'$TAG' does not match the pipeline tag format"
+            exit 1
+          fi
+          if [ "$SVC" = "all" ]; then
+            echo 'services=["api-service","inventory-service"]' >> "$GITHUB_OUTPUT"
+          else
+            printf 'services=["%s"]\n' "$SVC" >> "$GITHUB_OUTPUT"
+          fi
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+  rollback:
+    name: ${{ matrix.service }} -> ${{ inputs.good_tag }}
+    needs: plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.plan.outputs.services) }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: republish the known-good digest as the newest tag
+        shell: bash
+        env:
+          OWNER: ${{ needs.plan.outputs.owner }}
+          SVC: ${{ matrix.service }}
+          TAG: ${{ inputs.good_tag }}
+          ENVN: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          REPO="ghcr.io/${OWNER}/${SVC}"
+
+          DIGEST="$(docker buildx imagetools inspect "${REPO}:${TAG}" --format '{{ .Manifest.Digest }}')"
+          echo "known-good digest: ${DIGEST}"
+
+          # Keep the ORIGINAL commit sha in the new tag: the tag must still say
+          # which source built this image, or the audit trail lies about what is
+          # running. Only the timestamp moves forward.
+          SHA_SUFFIX="${TAG##*-}"
+          NEW_TAG="${ENVN}-$(date -u +%Y%m%dT%H%M%SZ)-${SHA_SUFFIX}"
+
+          docker buildx imagetools create --tag "${REPO}:${NEW_TAG}" "${REPO}@${DIGEST}"
+
+          NEW_DIGEST="$(docker buildx imagetools inspect "${REPO}:${NEW_TAG}" --format '{{ .Manifest.Digest }}')"
+          [ "$DIGEST" = "$NEW_DIGEST" ] || {
+            echo "::error::digest changed during retag; the rolled-back artifact is NOT the one that was known good"; exit 1; }
+
+          {
+            echo "### ${SVC} rolled back on ${ENVN}"
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| returned to | \`${TAG}\` |"
+            echo "| published as | \`${NEW_TAG}\` |"
+            echo "| digest | \`${DIGEST}\` (unchanged) |"
+            echo ""
+            echo "Image Updater will pick this up within its poll interval and commit it to git."
+          } >> "$GITHUB_STEP_SUMMARY"
