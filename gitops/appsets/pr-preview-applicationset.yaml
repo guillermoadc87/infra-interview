@@ -123,6 +123,22 @@ spec:
           - PrunePropagationPolicy=foreground
           - PruneLast=true
           - ServerSideApply=true
+        # Without this the namespace LEAKS.
+        #
+        # CreateNamespace=true creates a namespace that Argo CD does not own, so
+        # deleting the Application removes every workload inside it and leaves the
+        # empty namespace behind forever. Observed after merging PR #4: zero
+        # resources remaining, namespace still Active -- and one still lingering
+        # from a PR closed hours earlier.
+        #
+        # managedNamespaceMetadata brings the Namespace into the Application's
+        # resource tree, so `preserveResourcesOnDeletion: false` prunes it along
+        # with everything else. On a long-lived environment a leaked namespace is
+        # untidy; with one per pull request it is unbounded growth.
+        managedNamespaceMetadata:
+          labels:
+            app.kubernetes.io/part-of: preview
+            pod-security.kubernetes.io/enforce: baseline
         retry:
           limit: 3
           backoff:
