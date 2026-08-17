@@ -27,4 +27,4 @@ patches:
 # nothing. CI enforces this with a grep.
 images:
   - name: ghcr.io/guillermoadc87/inventory-service
-    newTag: dev-00000000T000000Z-0000000
+    newTag: dev-20260817T021244Z-744a5be
