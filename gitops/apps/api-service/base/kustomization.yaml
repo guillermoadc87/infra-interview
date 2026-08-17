@@ -11,6 +11,7 @@ resources:
   - deployment.yaml
   - service.yaml
   - wait-for-postgres-job.yaml
+  - external-secret.yaml
 
 labels:
   - pairs:

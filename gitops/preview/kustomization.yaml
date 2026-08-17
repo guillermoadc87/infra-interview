@@ -21,24 +21,18 @@ resources:
   - ../apps/inventory-service/base
   - ../platform/postgres/base
 
-# A preview must be self-contained: its namespace is created fresh by Argo CD, so
-# the out-of-band `postgres-credentials` Secret that the long-lived environments
-# rely on does not exist there, and the pods would sit in
-# CreateContainerConfigError forever.
+# A preview is self-contained EXCEPT for the platform layer.
 #
-# This literal is NOT a secret being leaked. It guards an empty, ephemeral
-# database that exists for the lifetime of one pull request, is reachable only
-# from inside its own namespace, and contains nothing but seeded demo rows. The
-# long-lived environments deliberately do NOT work this way -- their credential is
-# injected out of band and never committed.
+# This used to carry a secretGenerator with a literal password, because a preview
+# namespace is created fresh and had no credential. It now inherits the
+# ExternalSecrets from the composed bases instead, so every environment --
+# including an ephemeral preview -- gets its database credential from Vault
+# through the same mechanism, and no password literal exists anywhere in git.
 #
-# secretGenerator appends a content hash and kustomize's nameReference transformer
-# rewrites the secretKeyRef in both Deployments, so nothing needs to know the name.
-secretGenerator:
-  - name: postgres-credentials
-    literals:
-      - username=postgres
-      - password=preview-only-ephemeral
+# The trade-off, accepted deliberately: a preview now depends on External Secrets
+# and the ClusterSecretStore being healthy on the cluster it lands on. It will not
+# come up on a bare cluster. If previews move to their own cluster, that cluster
+# needs the platform layer too.
 
 patches:
   # One replica each: N open PRs multiply this footprint, and a preview serves

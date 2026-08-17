@@ -1,0 +1,7 @@
+{
+  "appName": "external-secrets",
+  "chartRepo": "https://charts.external-secrets.io",
+  "chartName": "external-secrets",
+  "chartVersion": "2.9.0",
+  "namespace": "external-secrets"
+}

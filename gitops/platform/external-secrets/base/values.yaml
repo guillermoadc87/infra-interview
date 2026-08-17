@@ -1,0 +1,37 @@
+# CRDs are installed by the chart. Argo CD's ServerSideApply (set globally on the
+# platform appset) is what makes this survive: the ExternalSecret CRD is large
+# enough that client-side apply hits the 262144-byte annotation limit.
+installCRDs: true
+
+# Pin the resource names so the Vault role's bound_service_account_names and the
+# ClusterSecretStore's serviceAccountRef stay correct regardless of the Helm
+# release name Argo CD chooses.
+fullnameOverride: external-secrets
+
+serviceAccount:
+  create: true
+  name: external-secrets
+
+# Small: this cluster has a handful of ExternalSecrets, not thousands.
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 192Mi
+
+webhook:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+
+certController:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 192Mi

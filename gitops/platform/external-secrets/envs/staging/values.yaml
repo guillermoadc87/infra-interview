@@ -1,0 +1,5 @@
+# Nothing environment-specific. The file must exist: the platform appset lists
+# both base and env value files and deliberately does NOT set
+# ignoreMissingValueFiles, so a missing file fails loudly instead of silently
+# deploying chart defaults.
+{}

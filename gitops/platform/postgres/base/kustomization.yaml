@@ -6,6 +6,7 @@ namespace: platform
 resources:
   - deployment.yaml
   - service.yaml
+  - external-secret.yaml
 
 labels:
   - pairs:

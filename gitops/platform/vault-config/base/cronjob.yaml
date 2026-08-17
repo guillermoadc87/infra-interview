@@ -1,0 +1,69 @@
+# The reconciler runs on a schedule, not once, because a file-storage Vault comes
+# back SEALED after any restart and Argo CD cannot detect that -- the Kubernetes
+# resources are unchanged, so selfHeal has nothing to correct.
+#
+# This converts "a human must notice Vault is sealed and re-seed it" into "the
+# platform repairs itself within two minutes".
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-config
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  # Do not stampede a backlog of missed runs after the laptop wakes up.
+  startingDeadlineSeconds: 60
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: vault-config
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: reconcile
+              # Plain alpine plus curl and jq. The script talks to the Vault and
+              # Kubernetes HTTP APIs directly, so there is no vault or kubectl
+              # binary to download on every scheduled run.
+              image: alpine:3.22
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  apk add --no-cache --quiet curl jq >/dev/null
+                  exec /bin/sh /scripts/reconcile-vault.sh
+              env:
+                - name: VAULT_ADDR
+                  value: http://vault.vault.svc.cluster.local:8200
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+              resources:
+                requests: { cpu: 25m, memory: 64Mi }
+                limits: { memory: 128Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                # apk needs to write to the filesystem, so this cannot be
+                # readOnlyRootFilesystem without pre-baking an image. Building and
+                # publishing an image just for curl+jq is the cleaner production
+                # answer; noted rather than hidden.
+                readOnlyRootFilesystem: false
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
+            - name: scripts
+              configMap:
+                name: vault-config-scripts
+                defaultMode: 0755

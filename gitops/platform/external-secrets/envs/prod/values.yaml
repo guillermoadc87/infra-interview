@@ -1,0 +1,9 @@
+# Prod runs the controller with a little more headroom and 2 replicas, since every
+# workload's credential now depends on it being available.
+replicaCount: 2
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 256Mi

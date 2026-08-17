@@ -3,29 +3,44 @@ global:
 
 # The agent injector is disabled deliberately.
 #
-# Nothing in this repo consumes it, and leaving it enabled creates a
-# MutatingWebhookConfiguration whose caBundle the injector patches at runtime --
+# Nothing consumes it -- secrets reach workloads through External Secrets, not
+# through injected sidecars. Leaving it on also creates a
+# MutatingWebhookConfiguration whose caBundle the injector patches at runtime,
 # which Argo CD then reverts on every selfHeal, producing a permanent
-# Synced/OutOfSync flap. Because its failurePolicy is Ignore it fails open, so
-# nothing visibly breaks; it just trains people to ignore OutOfSync, which is
-# worse. Fixing the cause in values beats an ignoreDifferences band-aid.
+# Synced/OutOfSync flap that trains people to ignore OutOfSync.
 injector:
   enabled: false
 
 server:
+  # NOT dev mode.
+  #
+  # Dev mode is in-memory, so every Vault pod restart destroyed every secret and
+  # the whole ESO chain broke until someone re-seeded it -- and Argo CD could not
+  # detect that, because the Kubernetes resources were unchanged.
+  #
+  # Standalone + file storage on a PVC means secrets survive a restart. The cost
+  # is a real seal/unseal lifecycle: a restarted Vault comes back SEALED and
+  # serves nothing until unsealed. gitops/platform/vault-config automates that;
+  # see its README note for why production uses KMS auto-unseal instead of a
+  # stored unseal key.
   dev:
-    # Dev mode: in-memory, auto-unsealed, root token below. Carried over from the
-    # original setup.sh. NOTE this means Vault loses every secret on any pod
-    # restart, so it can never be a source of truth in this setup -- see
-    # SOLUTION.md. Nothing currently reads from it.
-    enabled: true
-    devRootToken: root
+    enabled: false
   standalone:
-    enabled: false
+    enabled: true
   dataStorage:
-    enabled: false
+    enabled: true
+    size: 1Gi
+    # k3s ships local-path as the default StorageClass, so this binds with no
+    # extra configuration.
+    storageClass: null
   auditStorage:
     enabled: false
+  # Readiness deliberately tolerates a sealed Vault (the default probe fails when
+  # sealed). Without this the pod never becomes Ready, so the reconciler that
+  # would unseal it can never reach it through the Service -- a deadlock.
+  readinessProbe:
+    enabled: true
+    path: "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204"
   resources:
     requests:
       cpu: 50m

@@ -26,9 +26,24 @@ spec:
     # which brings the Namespace itself under Argo CD management.
     - group: ""
       kind: Namespace
-    # The Vault chart binds its ServiceAccount to system:auth-delegator.
+    # Enumerated rather than wildcarded, so adding a platform component that
+    # wants new cluster-level power is a visible, reviewable change.
+    #
+    # The Vault chart binds its ServiceAccount to system:auth-delegator; the
+    # External Secrets chart installs its own CRDs, RBAC and admission webhook.
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
     - group: rbac.authorization.k8s.io
       kind: ClusterRoleBinding
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+    # The ClusterSecretStore that tells External Secrets where secrets live is
+    # cluster-scoped by design: the pr-* namespaces previews create on demand
+    # could not be served by a namespaced SecretStore.
+    - group: external-secrets.io
+      kind: ClusterSecretStore
   namespaceResourceWhitelist:
     - group: "*"
       kind: "*"

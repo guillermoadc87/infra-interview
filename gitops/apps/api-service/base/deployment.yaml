@@ -48,7 +48,8 @@ spec:
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: postgres-credentials
+                  # Materialised from Vault by base/external-secret.yaml.
+                  name: api-service-db
                   key: password
             # Everything else is environment-scoped and lives elsewhere:
             #   FEATURE_ORDER_LIMIT   -> envs/<env>/settings.yaml         (cat 4, PROMOTED)
