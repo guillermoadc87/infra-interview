@@ -1,8 +1,6 @@
 # CONFIG CATEGORY 4 — non-static business settings. PROMOTED.
-#
-# Deliberately lags staging (100) to show the model working: prod picks this up
-# when someone promotes it, not before. The drift is visible in a diff, which is
-# the point.
+# Byte-identical to envs/dev/settings.yaml: this is what a completed dev->staging
+# promotion of this category looks like.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,4 +12,4 @@ spec:
         - name: api-service
           env:
             - name: FEATURE_ORDER_LIMIT
-              value: "25"
+              value: "100"
