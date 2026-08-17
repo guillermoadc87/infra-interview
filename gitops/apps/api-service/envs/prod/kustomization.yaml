@@ -22,4 +22,4 @@ patches:
 # promotion workflow.
 images:
   - name: ghcr.io/guillermoadc87/api-service
-    newTag: prod-20260817T144254Z-15bdb10
+    newTag: prod-20260817T233413Z-638e6b6
