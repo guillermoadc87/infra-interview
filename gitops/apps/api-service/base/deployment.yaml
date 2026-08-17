@@ -55,7 +55,17 @@ spec:
             - name: DB_NAME
               value: orders
             - name: DB_USER
-              value: postgres
+              valueFrom:
+                secretKeyRef:
+                  # The USERNAME comes from the Secret too, not just the password.
+                  # Vault's database engine generates a unique role name per lease
+                  # (v-kubernet-api-serv-...), so hardcoding `postgres` here meant the
+                  # app kept authenticating as the admin user with a dynamic
+                  # password and failed with "password authentication failed for
+                  # user postgres". Works for the static credential too -- that
+                  # Secret carries `username` as well.
+                  name: api-service-db
+                  key: username
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
