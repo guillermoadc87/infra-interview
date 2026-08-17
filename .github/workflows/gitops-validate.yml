@@ -126,3 +126,55 @@ jobs:
             fail=1
           fi
           exit "$fail"
+
+      # Parsing YAML is not enough. An ApplicationSet can be perfectly valid YAML
+      # and still be rejected by the API server for a misplaced field -- e.g.
+      # `pullRequest.labels` instead of `pullRequest.github.labels`, which cost
+      # real debugging time here. Validate against the REAL CRD schema.
+      - name: validate appsets against the Argo CD CRD schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARGOCD_VERSION=v3.5.1
+          curl -sSfL -o /tmp/appset-crd.yaml \
+            "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/crds/applicationset-crd.yaml"
+          python3 -m pip install --quiet pyyaml jsonschema
+
+          python3 - <<'PY'
+          import glob, sys, yaml
+          from jsonschema import Draft7Validator
+
+          crd = yaml.safe_load(open('/tmp/appset-crd.yaml'))
+          schema = crd['spec']['versions'][0]['schema']['openAPIV3Schema']
+
+          def strip(node):
+              # x-kubernetes-* vendor extensions are not JSON Schema; drop them so
+              # the validator only enforces real structure.
+              if isinstance(node, dict):
+                  node.pop('x-kubernetes-preserve-unknown-fields', None)
+                  node.pop('x-kubernetes-int-or-string', None)
+                  node.pop('x-kubernetes-list-type', None)
+                  node.pop('x-kubernetes-list-map-keys', None)
+                  # Reject unknown fields -- the whole point of this check.
+                  if node.get('type') == 'object' and 'properties' in node:
+                      node.setdefault('additionalProperties', False)
+                  for v in list(node.values()):
+                      strip(v)
+              elif isinstance(node, list):
+                  for v in node:
+                      strip(v)
+          strip(schema)
+
+          fail = False
+          for f in sorted(glob.glob('gitops/appsets/*.yaml')):
+              for doc in yaml.safe_load_all(open(f)):
+                  if not doc or doc.get('kind') != 'ApplicationSet':
+                      continue
+                  # templatePatch is a free-form string rendered later; its Go
+                  # template braces are not valid YAML on their own.
+                  for err in Draft7Validator(schema).iter_errors(doc):
+                      path = '.'.join(str(p) for p in err.absolute_path)
+                      print(f"::error file={f}::{path}: {err.message[:300]}")
+                      fail = True
+          sys.exit(1 if fail else 0)
+          PY

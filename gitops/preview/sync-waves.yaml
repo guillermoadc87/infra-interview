@@ -1,0 +1,7 @@
+# Wave 0: the database must be healthy before the services are applied.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"

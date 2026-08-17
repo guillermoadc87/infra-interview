@@ -1,0 +1,17 @@
+# Delete the PreSync gate Jobs in previews.
+#
+# In the long-lived environments postgres is a SEPARATE Application, so the gate
+# waits on something managed elsewhere and works correctly. A preview bundles its
+# own postgres into the SAME Application -- and a PreSync hook runs before any of
+# that Application's resources, so the gate waits for a database that cannot be
+# created until the gate completes. Deadlock: both Jobs sat Running while nothing
+# else was ever applied.
+#
+# Ordering here is done with sync waves instead, which DO work inside a single
+# Application: postgres in wave 0, the services in wave 1. Argo CD waits for
+# wave 0 to be healthy first, and the services' own DB retry loop covers the rest.
+$patch: delete
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-service-wait-for-postgres
