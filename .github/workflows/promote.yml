@@ -153,10 +153,27 @@ jobs:
           git checkout -b "$BRANCH"
 
           OVERLAY="gitops/apps/${SVC}/envs/prod"
-          # Same field, same tool the robot uses on dev/staging -- so there is
-          # exactly one writer of the image tag per environment.
-          ( cd "$OVERLAY" && kustomize edit set image "ghcr.io/${OWNER}/${SVC}:${DST_TAG}" ) 2>/dev/null \
-            || sed -i "s|newTag: .*|newTag: ${DST_TAG}|" "${OVERLAY}/kustomization.yaml"
+
+          # Surgical, single-line edit -- deliberately NOT `kustomize edit set image`.
+          #
+          # `kustomize edit` round-trips the file through its YAML marshaller,
+          # which reformats every list and DELETES all comments. The first version
+          # of this workflow used it and produced a promotion PR whose diff was 20
+          # lines of reindentation with the real change buried inside. A promotion
+          # PR exists to be reviewed by a human, so its diff must be one line.
+          python3 - "$OVERLAY/kustomization.yaml" "ghcr.io/${OWNER}/${SVC}" "${DST_TAG}" <<'PY'
+          import re, sys
+          path, image, tag = sys.argv[1], sys.argv[2], sys.argv[3]
+          src = open(path).read()
+          # Replace only the newTag that follows this image's `name:` line.
+          pattern = re.compile(
+              r'(- name:\s*' + re.escape(image) + r'\s*\n\s*newTag:\s*)(\S+)')
+          new, n = pattern.subn(lambda m: m.group(1) + tag, src, count=1)
+          if n != 1:
+              sys.exit(f"expected exactly one newTag for {image} in {path}, found {n}")
+          open(path, 'w').write(new)
+          print(f"set {image} newTag -> {tag}")
+          PY
 
           # Category 4 travels WITH the version: a promotion is atomically "this
           # image plus the business settings it was validated with".
