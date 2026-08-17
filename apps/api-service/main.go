@@ -112,6 +112,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handleHealthz)
 	mux.HandleFunc("/readyz", handleReadyz)
+	mux.HandleFunc("/orders/summary", handleSummary(cfg))
 	mux.HandleFunc("/orders", handleOrders(cfg))
 	mux.HandleFunc("/orders/", handleOrderByID)
 
@@ -195,6 +196,30 @@ func writeJSON(w http.ResponseWriter, code int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// handleSummary reports how many orders exist alongside the two settings that
+// govern this environment. It exists to make the config model observable: the
+// order limit is PROMOTED between environments, while the environment name is
+// never promoted, so the same build reports different values per environment.
+func handleSummary(cfg settings) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var count int
+		if err := db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM orders").Scan(&count); err != nil {
+			internalError(w, "counting orders", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"orders":      count,
+			"order_limit": cfg.featureOrderLim,
+			"environment": cfg.environment,
+			"version":     version,
+		})
+	}
 }
 
 func handleOrders(cfg settings) http.HandlerFunc {
