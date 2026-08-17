@@ -1,0 +1,96 @@
+# LEVEL 2 of 3 — ephemeral preview environments, one per open pull request.
+#
+# This is the piece that makes trunk-based development workable: `main` is the
+# only long-lived branch, so a developer needs somewhere to exercise a change
+# before it merges. Opening a PR creates a complete, isolated stack; closing the
+# PR destroys it.
+#
+# Generator is `pullRequest`, NOT matrix(git x clusters):
+#   - the unit of work is a PR, not a directory, so there is nothing to discover
+#     in git -- every preview renders the same gitops/preview overlay
+#   - previews only ever land on the dev cluster, so there is no label to select on
+#
+# Everything that differs per PR is injected at the Application level below.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: pr-previews
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  # Destroy the whole namespace when the PR closes. Without this, previews
+  # accumulate silently until a node runs out of memory.
+  syncPolicy:
+    preserveResourcesOnDeletion: false
+
+  generators:
+    - pullRequest:
+        github:
+          owner: guillermoadc87
+          repo: infra-interview
+          # Re-uses the Argo CD repository credential; a public repo can be read
+          # anonymously but the API is rate-limited hard, which shows up as
+          # previews mysteriously not appearing.
+          tokenRef:
+            secretName: repo-infra-interview
+            key: password
+        # Previews cost real memory on a laptop-sized cluster, so they are
+        # OPT-IN: label a PR `preview` to get one. Drop this to preview every PR.
+        labels:
+          - preview
+        requeueAfterSeconds: 60
+
+  template:
+    metadata:
+      name: "preview-{{.branch_slug}}"
+      labels:
+        app.kubernetes.io/part-of: preview
+        env: preview
+        pr-number: "{{.number}}"
+        branch: "{{.branch_slug}}"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: preview
+      source:
+        repoURL: https://github.com/guillermoadc87/infra-interview
+        # Previews render the overlay from the PR's OWN head, so a change to the
+        # manifests is previewed too -- not just a change to application code.
+        targetRevision: "{{.head_sha}}"
+        path: gitops/preview
+        kustomize:
+          # The branch slug suffixes every resource, so a developer working
+          # across two PRs can tell the stacks apart at a glance, and any
+          # cluster-scoped or cross-namespace reference stays unambiguous. The
+          # overlay's `replacements` keeps DB_HOST pointing at the suffixed
+          # postgres Service.
+          nameSuffix: "-{{.branch_slug}}"
+          # Both services at the PR head short SHA -- the exact code under review.
+          images:
+            - ghcr.io/guillermoadc87/api-service:pr-{{ slice .head_sha 0 7 }}
+            - ghcr.io/guillermoadc87/inventory-service:pr-{{ slice .head_sha 0 7 }}
+      destination:
+        # Previews always land on dev. `name` (not `server`) so this keeps working
+        # if the dev cluster's address changes.
+        name: dev
+        namespace: "pr-{{.branch_slug}}"
+      revisionHistoryLimit: 3
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+          - ServerSideApply=true
+        retry:
+          limit: 3
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 1m

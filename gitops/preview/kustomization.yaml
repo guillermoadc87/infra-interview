@@ -1,0 +1,104 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# PR PREVIEW: one self-contained stack per pull request.
+#
+# Unlike the long-lived environments, a preview bundles its OWN postgres. It must
+# not touch the shared platform database -- a developer testing a schema change
+# should not be able to break dev for everyone else.
+#
+# This overlay pins NOTHING environment-specific. The ApplicationSet
+# (appsets/pr-preview-applicationset.yaml) injects per PR, at the Application
+# level:
+#   namespace   pr-<branch-slug>
+#   nameSuffix  -<branch-slug>
+#   images      both services at the PR head short SHA
+#
+# That is why there is no namespace or nameSuffix committed here.
+
+resources:
+  - ../apps/api-service/base
+  - ../apps/inventory-service/base
+  - ../platform/postgres/base
+
+# A preview must be self-contained: its namespace is created fresh by Argo CD, so
+# the out-of-band `postgres-credentials` Secret that the long-lived environments
+# rely on does not exist there, and the pods would sit in
+# CreateContainerConfigError forever.
+#
+# This literal is NOT a secret being leaked. It guards an empty, ephemeral
+# database that exists for the lifetime of one pull request, is reachable only
+# from inside its own namespace, and contains nothing but seeded demo rows. The
+# long-lived environments deliberately do NOT work this way -- their credential is
+# injected out of band and never committed.
+#
+# secretGenerator appends a content hash and kustomize's nameReference transformer
+# rewrites the secretKeyRef in both Deployments, so nothing needs to know the name.
+secretGenerator:
+  - name: postgres-credentials
+    literals:
+      - username=postgres
+      - password=preview-only-ephemeral
+
+patches:
+  # One replica each: N open PRs multiply this footprint, and a preview serves
+  # one developer.
+  - path: replicas.yaml
+    target:
+      kind: Deployment
+      name: api-service
+  - path: replicas.yaml
+    target:
+      kind: Deployment
+      name: inventory-service
+  # A preview is non-prod by definition: sandbox endpoints, permissive limits,
+  # and ENVIRONMENT=preview so a developer can tell which stack they are hitting.
+  - path: preview-settings.yaml
+    target:
+      kind: Deployment
+      name: api-service
+  - path: preview-settings-inventory.yaml
+    target:
+      kind: Deployment
+      name: inventory-service
+
+# The wiring that makes nameSuffix survivable.
+#
+# The appset applies `nameSuffix: -<branch-slug>`, so the postgres Service becomes
+# `postgres-<branch-slug>`. Nothing would rewrite the DB_HOST env vars to match:
+# kustomize's nameReference transformer only knows well-known fields, not
+# arbitrary env values, so the apps would keep pointing at a Service name that no
+# longer exists.
+#
+# `replacements` closes that gap by reading the ACTUAL rendered postgres Service
+# name and writing it into every consumer. It runs after the name transformers,
+# so it picks the suffix up automatically -- verified: DB_HOST renders as
+# `postgres-<branch-slug>` in both Deployments and both PreSync gates.
+replacements:
+  - source:
+      kind: Service
+      name: postgres
+      fieldPath: metadata.name
+    targets:
+      - select:
+          kind: Deployment
+          name: api-service
+        fieldPaths:
+          - spec.template.spec.containers.[name=api-service].env.[name=DB_HOST].value
+      - select:
+          kind: Deployment
+          name: inventory-service
+        fieldPaths:
+          - spec.template.spec.containers.[name=inventory-service].env.[name=DB_HOST].value
+      # Both gates must wait on the preview's own database, not the platform one
+      # they default to in base.
+      - select:
+          kind: Job
+          name: api-service-wait-for-postgres
+        fieldPaths:
+          - spec.template.spec.containers.[name=wait].env.[name=DB_HOST].value
+      - select:
+          kind: Job
+          name: inventory-service-wait-for-postgres
+        fieldPaths:
+          - spec.template.spec.containers.[name=wait].env.[name=DB_HOST].value

@@ -19,7 +19,12 @@ require_tools colima kubectl
 if profile_running "$PROFILE"; then
   ok "colima profile '$PROFILE' is already running"
 else
-  info "starting colima profile '$PROFILE' (k3s, 2 cpu, 4 GiB)"
+  # Overridable because four VMs on a 32 GB laptop is genuinely tight. A spoke
+  # runs postgres + two small Go services + dev-mode Vault, so 3 GiB is ample;
+  # the hub runs Argo CD and wants more.
+  CPUS="${CPUS:-2}"
+  MEMORY="${MEMORY:-4}"
+  info "starting colima profile '$PROFILE' (k3s, ${CPUS} cpu, ${MEMORY} GiB)"
 
   # --network-address gives the VM a routable address. Without it colima leaves
   # the kubeconfig pointing at 127.0.0.1, which a pod on another VM would
@@ -28,7 +33,7 @@ else
     --profile "$PROFILE"
     --runtime docker
     --kubernetes
-    --cpu 2 --memory 4 --disk 20
+    --cpu "$CPUS" --memory "$MEMORY" --disk 20
     --network-address
   )
 

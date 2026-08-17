@@ -36,6 +36,30 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
+  name: preview
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-100"
+spec:
+  description: Ephemeral per-pull-request preview stacks
+  sourceRepos:
+    - "*"
+  destinations:
+    # Previews are confined to their own pr-* namespaces on the dev cluster, so a
+    # misconfigured preview cannot write into shop, platform, or another
+    # environment.
+    - name: dev
+      namespace: "pr-*"
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
   name: apps
   namespace: argocd
   annotations:

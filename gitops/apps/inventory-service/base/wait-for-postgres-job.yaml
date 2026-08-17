@@ -12,7 +12,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: wait-for-postgres
+  # Named per service: both services deploy into the same namespace, so a
+  # shared name would mean two Applications owning one resource and fighting
+  # over it on every sync.
+  name: inventory-service-wait-for-postgres
   annotations:
     argocd.argoproj.io/hook: PreSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
@@ -30,14 +33,20 @@ spec:
       containers:
         - name: wait
           image: postgres:15-alpine
+          # DB_HOST is an env var rather than an inline hostname so a PR-preview
+          # overlay can point this at its OWN in-namespace postgres. A preview is
+          # self-contained; it must not gate on the shared platform database.
+          env:
+            - name: DB_HOST
+              value: postgres.platform.svc.cluster.local
           command: ["/bin/sh", "-c"]
           args:
             - |
-              until pg_isready -h postgres.platform.svc.cluster.local -p 5432 -U postgres; do
-                echo "waiting for postgres..."
+              until pg_isready -h "$DB_HOST" -p 5432 -U postgres; do
+                echo "waiting for postgres at $DB_HOST..."
                 sleep 3
               done
-              echo "postgres accepting connections"
+              echo "postgres accepting connections at $DB_HOST"
           resources:
             requests: { cpu: 10m, memory: 16Mi }
             limits: { memory: 64Mi }

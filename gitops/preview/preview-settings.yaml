@@ -1,0 +1,21 @@
+# A preview is non-prod by definition, so it gets sandbox endpoints and the
+# permissive business limits. ENVIRONMENT says "preview" rather than "dev" so a
+# developer can tell at a glance which stack they are hitting.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+spec:
+  template:
+    spec:
+      containers:
+        - name: api-service
+          env:
+            - name: ENVIRONMENT
+              value: preview
+            - name: PAYMENTS_URL
+              value: https://payments.sandbox.example.com
+            - name: LOG_LEVEL
+              value: debug
+            - name: FEATURE_ORDER_LIMIT
+              value: "100"

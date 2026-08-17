@@ -1,0 +1,7 @@
+# Previews are single-developer: one replica. N open PRs multiply this footprint.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: placeholder # replaced by the patch target selector
+spec:
+  replicas: 1
