@@ -103,9 +103,35 @@ jobs:
             fi
           fi
 
+          # A PR asking for a preview needs the WHOLE stack at one tag.
+          #
+          # Path filtering and preview completeness pull in opposite directions:
+          # the filter exists so touching one service does not rebuild the other,
+          # but the preview ApplicationSet pins BOTH services to pr-<sha>, so a
+          # service that was not rebuilt has no image at that tag and the preview
+          # comes up half in ImagePullBackOff.
+          wants_preview=false
+          if [ "${{ github.event_name }}" = "pull_request" ] && \
+             printf '%s' '${{ toJSON(github.event.pull_request.labels.*.name) }}' \
+               | jq -e 'index("preview")' >/dev/null 2>&1; then
+            wants_preview=true
+            echo "preview requested -> building the full stack" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Match ONLY the service's own directory.
+          #
+          # This previously also matched .github/workflows/ci.yml, which fires for
+          # EVERY service -- so any edit to the pipeline rebuilt everything.
+          # Observed on the merge of PR #4: it touched ci.yml, so
+          # inventory-service was rebuilt and republished with no source change,
+          # producing an image byte-identical to the previous one under a new tag.
+          #
+          # An image's content comes from the service's source and its Dockerfile,
+          # both under apps/<svc>/. A workflow change cannot alter those bytes, so
+          # rebuilding on one is pure waste.
           svcs=()
           for s in api-service inventory-service; do
-            if grep -qE "^(apps/${s}/|\.github/workflows/ci\.yml)" <<<"$changed"; then
+            if [ "$wants_preview" = "true" ] || grep -qE "^apps/${s}/" <<<"$changed"; then
               svcs+=("$s")
             fi
           done
