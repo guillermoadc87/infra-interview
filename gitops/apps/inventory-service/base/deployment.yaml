@@ -2,6 +2,17 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: inventory-service
+  annotations:
+    # Rotation. Without this, rotating the credential in Vault updates the
+    # Secret within a minute and the running pods keep serving with the OLD
+    # value, because env vars are read once at container start -- so the
+    # rotation silently does not take effect.
+    #
+    # Reloader watches this specific Secret and triggers a normal rolling
+    # update when it changes. Named explicitly rather than using
+    # `reloader.stakater.com/auto`, so it is obvious from this file which
+    # object restarts this workload.
+    secret.reloader.stakater.com/reload: "inventory-service-db"
 spec:
   # spec.replicas is DELIBERATELY ABSENT.
   # Owner: envs/<env>/replicas.yaml (config category 2). If it were set here,

@@ -26,6 +26,8 @@ spec:
     # ... do not match any of the allowed destinations in project 'platform'".
     - server: "*"
       namespace: external-secrets
+    - server: "*"
+      namespace: reloader
   clusterResourceWhitelist:
     # Required because the appsets use CreateNamespace + managedNamespaceMetadata,
     # which brings the Namespace itself under Argo CD management.

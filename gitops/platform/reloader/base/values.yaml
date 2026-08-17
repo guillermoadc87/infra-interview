@@ -1,0 +1,26 @@
+reloader:
+  # Watch every namespace: previews create pr-* namespaces on demand, so a
+  # fixed namespace list would silently miss them.
+  watchGlobally: true
+
+  # OPT-IN, not automatic.
+  #
+  # autoReloadAll would restart every workload whose ConfigMap or Secret changes,
+  # cluster-wide, with no annotation. That is a large blast radius for a
+  # behaviour that restarts pods -- and it would include the database. Workloads
+  # declare that they want it, via
+  #   secret.reloader.stakater.com/reload: "<secret-name>"
+  autoReloadAll: false
+
+  # `default` = patch a pod-template annotation to trigger a normal rolling
+  # update, so the Deployment's own surge/maxUnavailable settings still apply and
+  # a rotation cannot take all replicas down at once.
+  reloadStrategy: default
+
+  deployment:
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 128Mi

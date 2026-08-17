@@ -2,6 +2,18 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: postgres
+  # DELIBERATELY NOT annotated for Reloader.
+  #
+  # Restarting a database because its credential Secret changed is a dangerous
+  # default. POSTGRES_PASSWORD is only read when the data directory is first
+  # initialised, so on a real volume a restart would NOT adopt the new password
+  # -- it would come back still expecting the old one while every client had
+  # already rotated. And here, where the volume is an emptyDir, a restart wipes
+  # the database entirely: a credential rotation would become silent data loss.
+  #
+  # Rotating a database password is a procedure (ALTER USER, then rotate
+  # consumers), not a pod restart. The real answer is Vault's database secrets
+  # engine issuing short-lived per-application credentials; see SOLUTION.md.
 spec:
   replicas: 1
   strategy:
