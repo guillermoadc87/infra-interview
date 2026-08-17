@@ -1,7 +1,28 @@
 # CONFIG CATEGORY 2 — Kubernetes settings. Never promoted.
+#
+# 1, not 3, because this "production" is a 2-CPU colima VM.
+#
+# The rollout strategy is maxSurge=1/maxUnavailable=0, so an update must schedule
+# a surge pod BEFORE retiring any old one. At 3 replicas the node sat at 1925m of
+# 2000m requested, the 200m surge pod could never be placed, and no old pod was
+# allowed to make room -- so the first promotion into prod deadlocked with the
+# Deployment on the new image and every serving pod still on the old one.
+#
+# 1 replica leaves comfortable headroom for the surge pod and for the platform
+# components sharing this node.
+#
+# Two things this costs, stated rather than glossed:
+#   - prod no longer demonstrates multi-replica availability.
+#   - pdb.yaml says minAvailable: 1, so with one replica NO voluntary eviction is
+#     ever permitted. Rollouts are unaffected (a Deployment surges, it does not
+#     evict), but draining this node would block forever. At 3 replicas the PDB
+#     was a real availability guard; at 1 it is an availability BLOCKER.
+#
+# The correct fix in a real cluster is more nodes. This is the honest fix for the
+# cluster that exists.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api-service
 spec:
-  replicas: 3
+  replicas: 1
