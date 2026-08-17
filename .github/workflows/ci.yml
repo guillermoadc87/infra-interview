@@ -93,12 +93,31 @@ jobs:
             fi
           fi
 
+          # A PR asking for a preview needs the WHOLE stack at one tag.
+          #
+          # Path filtering and preview completeness are in direct tension: the
+          # filter exists so touching one service does not rebuild the other, but
+          # the preview ApplicationSet pins BOTH services to pr-<sha>, so a
+          # service that was not rebuilt has no image at that tag and the preview
+          # comes up half-broken with ImagePullBackOff.
+          #
+          # So: previews build everything, everything else stays filtered. The
+          # cost is one redundant build of an unchanged service, which the layer
+          # cache makes nearly free.
+          wants_preview=false
+          if [ "${{ github.event_name }}" = "pull_request" ] && \
+             printf '%s' '${{ toJSON(github.event.pull_request.labels.*.name) }}' | jq -e 'index("preview")' >/dev/null 2>&1; then
+            wants_preview=true
+          fi
+
           svcs=()
           for s in api-service inventory-service; do
-            if grep -qE "^(apps/${s}/|\.github/workflows/ci\.yml)" <<<"$changed"; then
+            if [ "$wants_preview" = "true" ] \
+               || grep -qE "^(apps/${s}/|\.github/workflows/ci\.yml)" <<<"$changed"; then
               svcs+=("$s")
             fi
           done
+          [ "$wants_preview" = "true" ] && echo "preview requested -> building the full stack" >> "$GITHUB_STEP_SUMMARY"
 
           json="$(printf '%s\n' "${svcs[@]+"${svcs[@]}"}" | grep -v '^$' | jq -R . | jq -sc .)"
           echo "services=${json}" >> "$GITHUB_OUTPUT"
