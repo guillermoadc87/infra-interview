@@ -18,4 +18,4 @@ patches:
 # CATEGORY 1 — see envs/dev/kustomization.yaml for why this is the sole owner.
 images:
   - name: ghcr.io/guillermoadc87/api-service
-    newTag: staging-20260817T143159Z-15bdb10
+    newTag: staging-20260817T222457Z-638e6b6
