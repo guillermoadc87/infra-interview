@@ -20,6 +20,12 @@ resources:
   - ../apps/api-service/base
   - ../apps/inventory-service/base
   - ../platform/postgres/base
+  # Previews take the STATIC credential. The long-lived environments use
+  # credentials/dynamic (Vault's database engine), but that mints roles in the
+  # shared platform Postgres -- a preview runs its own throwaway database that
+  # Vault has no connection to.
+  - ../apps/api-service/credentials/static
+  - ../apps/inventory-service/credentials/static
 
 # A preview is self-contained EXCEPT for the platform layer.
 #

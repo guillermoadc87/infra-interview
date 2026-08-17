@@ -142,4 +142,56 @@ case "$(v_get secret/data/postgres 2>/dev/null || true)" in
      log "seeded secret/postgres with a generated password" ;;
 esac
 
+# -------------------------------------------------- database engine ----------
+# DYNAMIC CREDENTIALS.
+#
+# Everything above hands out one shared, long-lived password. This section makes
+# Vault issue a BRAND NEW PostgreSQL role per application per lease, with a TTL,
+# and revoke it on expiry. There is then no shared database password to rotate,
+# which removes the ordering problem entirely: rotation stops being a procedure
+# and becomes the normal state of affairs.
+#
+# The static secret/postgres credential above does NOT go away -- it is how
+# Postgres bootstraps itself (POSTGRES_PASSWORD) and how Vault authenticates as
+# admin to mint the dynamic roles. Something has to initialise the database.
+case "$(v_get sys/mounts 2>/dev/null || true)" in
+  *'"database/"'*) : ;;
+  *) log "enabling the database secrets engine"
+     v_write sys/mounts/database '{"type":"database"}' >/dev/null ;;
+esac
+
+# Vault connects as the admin whose password lives in secret/postgres.
+ADMIN_PW="$(v_get secret/data/postgres | sed -n 's/.*"password":"\([^"]*\)".*/\1/p' | head -1)"
+[ -n "$ADMIN_PW" ] || { log "cannot read the admin password from secret/postgres"; exit 1; }
+
+PGHOST="postgres.platform.svc.cluster.local:5432"
+
+# One connection per database: the creation statements GRANT on `schema public`,
+# which only exists inside a specific database, so a single connection could not
+# serve both.
+for pair in "orders:api-service:app_orders" "inventory:inventory-service:app_inventory"; do
+  DB="${pair%%:*}"; REST="${pair#*:}"; APP="${REST%%:*}"; GRP="${REST##*:}"
+
+  v_write "database/config/postgres-${DB}" "$(printf '{"plugin_name":"postgresql-database-plugin","allowed_roles":"%s","connection_url":"postgresql://{{username}}:{{password}}@%s/%s?sslmode=disable","username":"postgres","password":"%s","password_authentication":"scram-sha-256"}' \
+    "$APP" "$PGHOST" "$DB" "$ADMIN_PW")" >/dev/null
+
+  # The dynamic role is created IN the group role that owns the schema, and its
+  # revocation REASSIGNS anything it made to that group before dropping it --
+  # otherwise an expiring lease would take the application's tables with it.
+  v_write "database/roles/${APP}" "$(printf '{"db_name":"postgres-%s","creation_statements":"CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '"'"'{{password}}'"'"' VALID UNTIL '"'"'{{expiration}}'"'"' IN ROLE %s INHERIT; GRANT ALL ON SCHEMA public TO \"{{name}}\";","revocation_statements":"REASSIGN OWNED BY \"{{name}}\" TO %s; DROP OWNED BY \"{{name}}\"; DROP ROLE IF EXISTS \"{{name}}\";","default_ttl":"1h","max_ttl":"24h"}' \
+    "$DB" "$GRP" "$GRP")" >/dev/null
+
+  # Least privilege per application: api-service can read ONLY its own
+  # credential path. It cannot obtain inventory-service's database access.
+  v_write "sys/policies/acl/${APP}-db" \
+    "$(printf '{"policy":"path \\"database/creds/%s\\" { capabilities = [\\"read\\"] }"}' "$APP")" PUT >/dev/null
+
+  # Each application authenticates as ITSELF, with its own ServiceAccount --
+  # not through the External Secrets controller's identity.
+  v_write "auth/kubernetes/role/${APP}" "$(printf '{"bound_service_account_names":"%s-vault","bound_service_account_namespaces":"shop","token_policies":"%s-db","token_ttl":"1h"}' \
+    "$APP" "$APP")" >/dev/null
+
+  log "database role ${APP} -> postgres-${DB} (owner ${GRP}, ttl 1h)"
+done
+
 log "done"

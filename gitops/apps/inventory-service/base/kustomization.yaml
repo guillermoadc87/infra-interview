@@ -11,7 +11,10 @@ resources:
   - deployment.yaml
   - service.yaml
   - wait-for-postgres-job.yaml
-  - external-secret.yaml
+  # NOTE: no ExternalSecret here on purpose. Each environment composes the
+  # credential MODE it wants -- credentials/dynamic for long-lived
+  # environments, credentials/static for previews -- rather than base
+  # shipping one and overlays deleting it.
 
 labels:
   - pairs:

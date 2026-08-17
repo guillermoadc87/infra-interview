@@ -3,6 +3,9 @@ kind: Kustomization
 
 resources:
   - ../../base
+  # Dynamic per-application database credentials from Vault. Replaces the
+  # static KV credential that base/ provides for previews.
+  - ../../credentials/dynamic
 
 components:
   # CATEGORY 3 — mostly-static business settings. NEVER promoted.

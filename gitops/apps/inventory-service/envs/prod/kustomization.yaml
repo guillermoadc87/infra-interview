@@ -3,6 +3,9 @@ kind: Kustomization
 
 resources:
   - ../../base
+  # Dynamic per-application database credentials from Vault. Replaces the
+  # static KV credential that base/ provides for previews.
+  - ../../credentials/dynamic
   - pdb.yaml # CATEGORY 2 — a prod-only Kubernetes resource
 
 components:
