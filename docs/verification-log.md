@@ -287,3 +287,121 @@ exists to provide, observed rather than argued.
 - One repo setting had to be changed by hand: **Allow GitHub Actions to create and
   approve pull requests** was off, so `gh pr create` failed *after* the retag had
   already happened. Enabled via the API.
+
+---
+
+# Round 3 — External Secrets Operator with Vault as the provider
+
+Replaces per-cluster, per-namespace manual secret seeding, and puts to work the
+Vault that had been deployed and entirely unused.
+
+## Verified on the dev cluster
+
+```
+NAME                   SYNC     HEALTH
+api-service-dev        Synced   Healthy
+external-secrets-dev   Synced   Healthy
+inventory-service-dev  Synced   Healthy
+postgres-dev           Synced   Healthy
+vault-config-dev       Synced   Healthy
+vault-dev              Synced   Healthy
+```
+
+**Vault is persistent, initialised and unsealed by the platform itself:**
+
+```
+Initialized     true
+Sealed          false
+Storage Type    file
+persistentvolumeclaim/data-vault-0   Bound   1Gi   local-path
+```
+
+Nobody ran `vault operator init` or `vault operator unseal` by hand. The
+`vault-config` CronJob did it, and stored the unseal key in
+`secret/vault-unseal-keys`.
+
+**No static credential is used to reach Vault:**
+
+```
+$ kubectl get clustersecretstore vault
+NAME    STATUS   CAPABILITIES   READY
+vault   Valid    ReadWrite      True
+```
+
+That store contains no token, password or key. ESO presents its own
+ServiceAccount JWT and Vault verifies it against the cluster API, using the
+`eso` role bound to `external-secrets/external-secrets` with a read-only policy
+scoped to one path.
+
+**The credential materialises in every namespace that needs it:**
+
+```
+NAMESPACE   NAME                   STORE   STATUS         READY
+platform    postgres-credentials   vault   SecretSynced   True
+shop        api-service-db         vault   SecretSynced   True
+shop        inventory-service-db   vault   SecretSynced   True
+```
+
+**And it is genuinely the Vault value, not a coincidence:**
+
+```
+vault kv get secret/postgres            -> K1Acti...(24 chars)
+shop/api-service-db                     -> K1Acti...(24)
+platform/postgres-credentials           -> K1Acti...(24)
+MATCH
+```
+
+**The application actually authenticates with it:**
+
+```
+$ curl localhost:18095/readyz
+{"db":"ok","status":"ok","version":"15bdb10"}
+```
+
+`db: ok` means api-service opened a real connection to Postgres using a password
+that no human has ever seen and that exists nowhere in git.
+
+## Bugs found and fixed this round
+
+1. **AppProject rejected the ESO namespace.** `application destination ...
+   namespace external-secrets do not match any of the allowed destinations in
+   project platform`. The miss was mine: I added it with a scripted string
+   replace that searched for single-quoted `server: '*'` while the file uses
+   double quotes, so the edit matched nothing and reported success. Replaces that
+   can silently no-op are worse than edits that fail loudly.
+2. **StatefulSet volumeClaimTemplates are immutable.** Argo CD's selfHeal
+   recreated the old dev-mode StatefulSet from the pre-change git state, then
+   could not update it: `Forbidden: updates to statefulset spec for fields other
+   than 'replicas' ... are forbidden`. Migrating dev-mode -> file storage requires
+   deleting the StatefulSet once. Documented as a migration step.
+3. **The reconciler crash-looped on `apk add`.** Installing curl and jq at
+   runtime needs root, under `runAsNonRoot: true`. Fixed by removing the
+   dependency -- curl plus shell builtins only -- rather than by running as root.
+4. **Permanent benign OutOfSync on the Vault StatefulSet.** Live and rendered
+   were byte-identical on every field set, but the API server defaults
+   `volumeMode` and `status` into volumeClaimTemplates. Resolved with
+   `ignoreDifferences` on that path: ignoring an immutable field costs nothing,
+   since a diff there can never be resolved by a sync.
+5. **ESO caches store validation.** After Vault was unsealed, the store stayed
+   `InvalidProviderConfig: Vault is sealed` from a stale check until it
+   revalidated. Not a defect, but it means "sealed" errors can outlive the seal.
+
+## Honest limitations
+
+- **The unseal key is stored in a Kubernetes Secret.** That is the direct cost of
+  choosing file storage over dev mode: something must unseal Vault unattended.
+  Production uses KMS/Transit auto-unseal so no unseal key is ever stored. As it
+  stands, anyone who can read Secrets in the `vault` namespace can unseal Vault.
+- **Vault is per-cluster, not central.** Each spoke runs its own Vault with its
+  own generated password, so "one source of truth for credentials" is true within
+  a cluster, not across the fleet. A real deployment points every cluster's
+  ClusterSecretStore at one external Vault.
+- **A preview now depends on the platform layer.** Previews inherit the
+  ExternalSecrets, so they will not come up on a bare cluster -- relevant if
+  previews move to their own cluster.
+- **Rotation is not wired.** Changing the password in Vault propagates to the
+  Secret within a minute, but nothing restarts the pods that read it into env
+  vars, so the running processes keep the old value. Real rotation needs either
+  `envFrom` with a checksum-triggered rollout, or Reloader.
+- **Only dev was migrated.** staging and prod have the manifests but were not
+  cut over, so their Vaults are still dev-mode with the old manual secrets.
