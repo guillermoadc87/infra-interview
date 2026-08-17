@@ -63,6 +63,22 @@ spec:
         server: "{{.server}}"
         namespace: "{{.namespace}}"
       revisionHistoryLimit: 5
+      # A StatefulSet's volumeClaimTemplates are IMMUTABLE, and the API server
+      # defaults fields into them (volumeMode, status) that the chart never
+      # specifies. Argo CD therefore reports a permanent OutOfSync that no sync
+      # can ever resolve -- observed on vault after moving it to file storage:
+      # live and rendered were byte-identical on every field we set, yet the
+      # StatefulSet stayed OutOfSync.
+      #
+      # Ignoring an immutable field costs nothing: a diff there could not be
+      # actioned anyway. Changing it requires recreating the StatefulSet, which is
+      # a deliberate migration, not a sync. Paired with RespectIgnoreDifferences
+      # below so selfHeal honours it too.
+      ignoreDifferences:
+        - group: apps
+          kind: StatefulSet
+          jsonPointers:
+            - /spec/volumeClaimTemplates
       syncPolicy:
         syncOptions:
           - CreateNamespace=true
