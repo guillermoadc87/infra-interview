@@ -13,6 +13,16 @@ on:
       - "**.md"
   pull_request:
     branches: [main]
+    # `labeled` is NOT in the default set (opened, synchronize, reopened), and
+    # leaving it out is a trap: a preview PR is normally opened first and
+    # labelled a moment later, so CI runs while the label is still absent,
+    # decides the PR does not want a preview, and builds only the changed
+    # service. The preview then pins both images at pr-<sha> and the service
+    # that was never built sits in ImagePullBackOff.
+    #
+    # Observed exactly that on PR #4: api-service built, inventory-service did
+    # not. Re-running on `labeled` makes adding the label rebuild the full stack.
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read

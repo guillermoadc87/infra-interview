@@ -128,3 +128,20 @@ func TestLoadSettingsReadsEachCategoryFromItsOwnVariable(t *testing.T) {
 		t.Errorf("loadSettings did not read every setting: %+v", cfg)
 	}
 }
+
+// The summary endpoint reports the PROMOTED order limit and the NEVER-PROMOTED
+// environment name, so the same image reports different values per environment.
+// This guards the wiring: if loadSettings stops reading either variable, the
+// endpoint silently starts lying about which environment served the request.
+func TestSummaryReportsEnvironmentScopedSettings(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "staging")
+	t.Setenv("FEATURE_ORDER_LIMIT", "42")
+
+	cfg := loadSettings()
+	if cfg.environment != "staging" {
+		t.Errorf("environment = %q, want staging", cfg.environment)
+	}
+	if cfg.featureOrderLim != 42 {
+		t.Errorf("featureOrderLim = %d, want 42", cfg.featureOrderLim)
+	}
+}
