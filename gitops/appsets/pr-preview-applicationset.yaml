@@ -87,9 +87,17 @@ spec:
           # postgres Service.
           nameSuffix: "-{{.branch_slug}}"
           # Both services at the PR head short SHA -- the exact code under review.
+          #
+          # Uses the generator's own `head_short_sha_7`, which is exactly the 7
+          # characters CI's `cut -c1-7` produces, so the tags line up by
+          # construction. Do NOT reach for `slice .head_sha 0 7`: Go template
+          # `slice` operates on slices and arrays, not strings, and fails at
+          # generation time with "list should be type of slice or array but
+          # string" -- which manifests as the appset silently generating zero
+          # Applications.
           images:
-            - ghcr.io/guillermoadc87/api-service:pr-{{ slice .head_sha 0 7 }}
-            - ghcr.io/guillermoadc87/inventory-service:pr-{{ slice .head_sha 0 7 }}
+            - ghcr.io/guillermoadc87/api-service:pr-{{.head_short_sha_7}}
+            - ghcr.io/guillermoadc87/inventory-service:pr-{{.head_short_sha_7}}
       destination:
         # Previews always land on dev. `name` (not `server`) so this keeps working
         # if the dev cluster's address changes.
