@@ -1,0 +1,7 @@
+{
+  "appName": "vault",
+  "chartRepo": "https://helm.releases.hashicorp.com",
+  "chartName": "vault",
+  "chartVersion": "0.31.0",
+  "namespace": "vault"
+}

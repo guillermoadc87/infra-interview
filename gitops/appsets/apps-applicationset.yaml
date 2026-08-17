@@ -1,0 +1,111 @@
+# LEVEL 2 of 3 — one ApplicationSet covering every application in every environment.
+#
+# Generator is a matrix of git x clusters:
+#   - the git child discovers WHAT to deploy by walking gitops/apps/*/envs/*
+#   - the clusters child discovers WHERE, by matching the `env` label
+#
+# The env label value is READ OUT OF THE REPO PATH, which is what lets a single
+# ApplicationSet span all environments instead of one file per environment.
+#
+# Path segments for gitops/apps/api-service/envs/dev:
+#   [0]=gitops [1]=apps [2]=api-service [3]=envs [4]=dev
+# so index 2 = application name, index 4 = environment. These indices are
+# load-bearing; CI renders this file and parses the result to catch drift.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: apps
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  goTemplate: true
+  # Fail loudly on a missing key rather than rendering an empty string into a
+  # destination or an image reference.
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: https://github.com/OWNER/infra-interview
+              revision: main
+              directories:
+                - path: gitops/apps/*/envs/*
+          - clusters:
+              selector:
+                matchLabels:
+                  env: "{{index .path.segments 4}}"
+  template:
+    metadata:
+      # Keyed on the CLUSTER name, not the env, so two clusters sharing a label
+      # cannot collide on the Application name.
+      name: "{{index .path.segments 2}}-{{.name}}"
+      labels:
+        app.kubernetes.io/name: "{{index .path.segments 2}}"
+        app.kubernetes.io/part-of: shop
+        env: "{{index .path.segments 4}}"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: apps
+      source:
+        repoURL: https://github.com/OWNER/infra-interview
+        targetRevision: main
+        path: "{{.path.path}}"
+      destination:
+        server: "{{.server}}"
+        namespace: shop
+      revisionHistoryLimit: 5
+      syncPolicy:
+        # `automated` is deliberately ABSENT here and added by templatePatch for
+        # non-prod only. Because a strategic-merge patch is additive, prod simply
+        # never receives it and stays manual-sync by construction.
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true
+        managedNamespaceMetadata:
+          labels:
+            # baseline, not restricted: enforced so we see violations, but the
+            # official postgres image starts as root before dropping privileges.
+            pod-security.kubernetes.io/enforce: baseline
+            pod-security.kubernetes.io/audit: restricted
+            pod-security.kubernetes.io/warn: restricted
+            app.kubernetes.io/part-of: shop
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+  # Per-environment policy divergence from a single template.
+  #
+  # Backticks are Go raw string literals so the regex backslashes survive
+  # templating; the rendered value is then wrapped in SINGLE YAML quotes, because
+  # in double quotes `\.` is an invalid YAML escape and the Application would
+  # fail to parse only once it reached the cluster.
+  templatePatch: |
+    {{- $app := index .path.segments 2 }}
+    {{- $env := index .path.segments 4 }}
+    {{- if ne $env "prod" }}
+    metadata:
+      labels:
+        image-updater: enabled
+      annotations:
+        argocd-image-updater.argoproj.io/image-list: 'app=ghcr.io/OWNER/{{ $app }}'
+        argocd-image-updater.argoproj.io/app.update-strategy: 'alphabetical'
+        argocd-image-updater.argoproj.io/app.allow-tags: 'regexp:^{{ $env }}-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}$'
+        argocd-image-updater.argoproj.io/app.platforms: 'linux/arm64'
+        argocd-image-updater.argoproj.io/write-back-method: 'git:repocreds'
+        argocd-image-updater.argoproj.io/write-back-target: 'kustomization'
+        argocd-image-updater.argoproj.io/git-branch: 'main'
+    spec:
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+    {{- else }}
+    spec: {}
+    {{- end }}

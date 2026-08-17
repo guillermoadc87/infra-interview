@@ -1,0 +1,45 @@
+# LEVEL 1 of 3 — the App-of-Apps.
+#
+# The only manifest applied by hand (by scripts/bootstrap-argocd.sh). It watches
+# gitops/appsets/ as a plain directory, so adding a capability to the platform is
+# literally "drop a YAML file in that folder".
+#
+# __REPO_URL__ is substituted at bootstrap time from $GH_OWNER.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: __REPO_URL__
+    targetRevision: main
+    path: gitops/appsets
+    directory:
+      # Flat by convention: everything in appsets/ is a top-level concern.
+      recurse: false
+      include: "*.yaml"
+  destination:
+    # The hub itself. Every Application this generates targets a REMOTE cluster
+    # selected by label; only the control plane lives here.
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  revisionHistoryLimit: 5
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false # bootstrap already created argocd
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

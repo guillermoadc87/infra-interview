@@ -1,0 +1,34 @@
+global:
+  enabled: true
+
+# The agent injector is disabled deliberately.
+#
+# Nothing in this repo consumes it, and leaving it enabled creates a
+# MutatingWebhookConfiguration whose caBundle the injector patches at runtime --
+# which Argo CD then reverts on every selfHeal, producing a permanent
+# Synced/OutOfSync flap. Because its failurePolicy is Ignore it fails open, so
+# nothing visibly breaks; it just trains people to ignore OutOfSync, which is
+# worse. Fixing the cause in values beats an ignoreDifferences band-aid.
+injector:
+  enabled: false
+
+server:
+  dev:
+    # Dev mode: in-memory, auto-unsealed, root token below. Carried over from the
+    # original setup.sh. NOTE this means Vault loses every secret on any pod
+    # restart, so it can never be a source of truth in this setup -- see
+    # SOLUTION.md. Nothing currently reads from it.
+    enabled: true
+    devRootToken: root
+  standalone:
+    enabled: false
+  dataStorage:
+    enabled: false
+  auditStorage:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi

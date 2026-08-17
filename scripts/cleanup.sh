@@ -1,14 +1,20 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+# Tear down every colima profile this project creates.
+# Usage: cleanup.sh [profile ...]     (default: all four)
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+source scripts/lib.sh
 
-COLIMA_PROFILE="dfns-interview"
+PROFILES=("$@")
+[ ${#PROFILES[@]} -gt 0 ] || PROFILES=("${ALL_PROFILES[@]}")
 
-echo "Deleting Colima (profile: ${COLIMA_PROFILE})..."
-colima delete --profile "${COLIMA_PROFILE}" --force 2>/dev/null || true
+for p in "${PROFILES[@]}"; do
+  info "deleting colima profile: $p"
+  colima delete --profile "$p" --force 2>/dev/null || true
+  ctx="$(ctx_for "$p")"
+  kubectl config delete-context "$ctx" 2>/dev/null || true
+  kubectl config delete-cluster "$ctx" 2>/dev/null || true
+  kubectl config delete-user    "$ctx" 2>/dev/null || true
+done
 
-# Remove colima context from kubeconfig
-kubectl config delete-context "colima-${COLIMA_PROFILE}" 2>/dev/null || true
-kubectl config delete-cluster "colima-${COLIMA_PROFILE}" 2>/dev/null || true
-kubectl config delete-user "colima-${COLIMA_PROFILE}" 2>/dev/null || true
-
-echo "Done. To start fresh, run: ./scripts/setup.sh"
+ok "done. To start fresh: ./scripts/setup.sh"

@@ -1,0 +1,24 @@
+# ONE ImageUpdater CR for every Application the ApplicationSets generate.
+#
+# Image Updater v1 is CRD-driven, but `useAnnotations: true` tells it to read
+# per-Application configuration from the legacy annotations instead. That is the
+# upstream-recommended pattern for ApplicationSets: each generated Application
+# carries its own image list and tag filter, so one CR covers all of them rather
+# than needing a CR per generated Application.
+#
+# The labelSelector is the production safety boundary. The apps ApplicationSet
+# only stamps `image-updater: enabled` onto non-prod Applications, so this
+# controller cannot see production at all -- prod's tag moves only through the
+# gated promotion workflow.
+apiVersion: argocd-image-updater.argoproj.io/v1alpha1
+kind: ImageUpdater
+metadata:
+  name: apps
+  namespace: argocd
+spec:
+  applicationRefs:
+    - namePattern: "*"
+      labelSelectors:
+        matchLabels:
+          image-updater: enabled
+      useAnnotations: true

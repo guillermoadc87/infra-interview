@@ -1,0 +1,88 @@
+# LEVEL 2 of 3 — platform components installed from UPSTREAM Helm charts.
+#
+# Multi-source Application: source 1 is this repo referenced only as a values
+# provider (`ref: values`, no `path`, so nothing is rendered from it), source 2 is
+# the upstream chart. Values are layered base-then-env from two fixed paths.
+#
+# Chart version is pinned per environment in config.json. For a platform
+# component the CHART VERSION is config category 1 -- the artifact version -- and
+# config.json is where it gets promoted, exactly as images[].newTag is for apps.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: platform-helm
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: https://github.com/OWNER/infra-interview
+              revision: main
+              files:
+                - path: gitops/platform/*/envs/*/config.json
+          - clusters:
+              selector:
+                matchLabels:
+                  env: "{{index .path.segments 4}}"
+  template:
+    metadata:
+      name: "{{.appName}}-{{.name}}"
+      labels:
+        app.kubernetes.io/name: "{{.appName}}"
+        app.kubernetes.io/part-of: platform
+        platform: "true"
+        env: "{{index .path.segments 4}}"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform
+      sources:
+        - repoURL: https://github.com/OWNER/infra-interview
+          targetRevision: main
+          ref: values
+        - repoURL: "{{.chartRepo}}"
+          chart: "{{.chartName}}"
+          targetRevision: "{{.chartVersion}}"
+          helm:
+            releaseName: "{{.appName}}"
+            # Drops the chart's `helm.sh/hook: test` Pod before Argo CD sees it.
+            skipTests: true
+            # $values is always relative to the ROOT of the ref source, hence the
+            # full gitops/ prefix. ignoreMissingValueFiles is deliberately NOT
+            # set, so a typo'd environment fails loudly instead of silently
+            # deploying chart defaults.
+            valueFiles:
+              - "$values/gitops/platform/{{.appName}}/base/values.yaml"
+              - "$values/gitops/platform/{{.appName}}/envs/{{index .path.segments 4}}/values.yaml"
+      destination:
+        server: "{{.server}}"
+        namespace: "{{.namespace}}"
+      revisionHistoryLimit: 5
+      syncPolicy:
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+  templatePatch: |
+    {{- if ne (index .path.segments 4) "prod" }}
+    spec:
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+    {{- else }}
+    spec: {}
+    {{- end }}

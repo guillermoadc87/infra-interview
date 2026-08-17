@@ -1,0 +1,12 @@
+server:
+  logLevel: warn
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+# A real production Vault is server.ha.enabled + raft storage + auto-unseal +
+# dataStorage. This is NOT that: "prod" here is a colima k3s VM and dev mode is
+# inherited from base/values.yaml. This file is exactly where that change would
+# land, and nowhere else -- which is the point of the base/env values split.

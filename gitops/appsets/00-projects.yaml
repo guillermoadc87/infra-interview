@@ -1,0 +1,55 @@
+# AppProjects, not ApplicationSets -- but they live here deliberately.
+#
+# Putting them inside the root app's single sync is what lets sync-wave -100
+# genuinely order them BEFORE the ApplicationSets that reference them, and gives
+# them selfHeal. The alternative (a separate directory applied by bootstrap)
+# reads more tidily but leaves them unreconciled. The 00- prefix makes the
+# ordering obvious to a human scanning the directory.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-100"
+spec:
+  description: Cluster platform services -- the things that make a cluster usable
+  sourceRepos:
+    - "*"
+  destinations:
+    - server: "*"
+      namespace: platform
+    - server: "*"
+      namespace: vault
+  clusterResourceWhitelist:
+    # Required because the appsets use CreateNamespace + managedNamespaceMetadata,
+    # which brings the Namespace itself under Argo CD management.
+    - group: ""
+      kind: Namespace
+    # The Vault chart binds its ServiceAccount to system:auth-delegator.
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: apps
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-100"
+spec:
+  description: Business applications
+  sourceRepos:
+    - "*"
+  destinations:
+    - server: "*"
+      namespace: shop
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

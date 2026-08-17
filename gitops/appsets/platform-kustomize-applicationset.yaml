@@ -1,0 +1,80 @@
+# LEVEL 2 of 3 — platform components rendered with Kustomize.
+#
+# Uses the git FILES generator rather than `directories`, keyed on the filename
+# `kustomize.json`. The filename is what routes a component to this appset versus
+# the Helm one -- adding a chart-based component is a matter of writing
+# config.json instead, with no change to either appset.
+#
+# For the files generator, .path refers to the DIRECTORY containing the matched
+# file, so gitops/platform/postgres/envs/dev/kustomize.json gives:
+#   [0]=gitops [1]=platform [2]=postgres [3]=envs [4]=dev
+# Same indices as the apps appset: 2 = component, 4 = environment.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: platform-kustomize
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: https://github.com/OWNER/infra-interview
+              revision: main
+              files:
+                - path: gitops/platform/*/envs/*/kustomize.json
+          - clusters:
+              selector:
+                matchLabels:
+                  env: "{{index .path.segments 4}}"
+  template:
+    metadata:
+      name: "{{.appName}}-{{.name}}"
+      labels:
+        app.kubernetes.io/name: "{{.appName}}"
+        app.kubernetes.io/part-of: platform
+        platform: "true"
+        env: "{{index .path.segments 4}}"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform
+      source:
+        repoURL: https://github.com/OWNER/infra-interview
+        targetRevision: main
+        path: "{{.path.path}}"
+      destination:
+        server: "{{.server}}"
+        namespace: "{{.namespace}}"
+      revisionHistoryLimit: 5
+      syncPolicy:
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true
+        managedNamespaceMetadata:
+          labels:
+            pod-security.kubernetes.io/enforce: baseline
+            app.kubernetes.io/part-of: platform
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+  templatePatch: |
+    {{- if ne (index .path.segments 4) "prod" }}
+    spec:
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+    {{- else }}
+    spec: {}
+    {{- end }}
