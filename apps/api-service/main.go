@@ -163,6 +163,7 @@ func initDB() error {
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "ok",
+		"preview": "hello-from-pr",
 		"version": version,
 	})
 }
