@@ -136,7 +136,19 @@ jobs:
             fi
           done
 
-          json="$(printf '%s\n' "${svcs[@]+"${svcs[@]}"}" | grep -v '^$' | jq -R . | jq -sc .)"
+          # Handle "nothing to build" explicitly.
+          #
+          # This was previously one pipeline ending in `grep -v '^$'`, which
+          # returns exit 1 when it matches nothing -- and under `set -o pipefail`
+          # that failed the whole step. The path was unreachable until the filter
+          # stopped matching ci.yml; the very next commit touched only the
+          # workflow, selected no services, and the job died instead of reporting
+          # an empty matrix for the `services != '[]'` guard to skip on.
+          if [ ${#svcs[@]} -eq 0 ]; then
+            json='[]'
+          else
+            json="$(printf '%s\n' "${svcs[@]}" | jq -R . | jq -sc .)"
+          fi
           echo "services=${json}" >> "$GITHUB_OUTPUT"
           echo "building: ${json}" >> "$GITHUB_STEP_SUMMARY"
 
