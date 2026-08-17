@@ -80,6 +80,16 @@ spec:
         targetRevision: "{{.head_sha}}"
         path: gitops/preview
         kustomize:
+          # MUST be set here, not only on destination.namespace.
+          #
+          # destination.namespace only decides where namespace-less resources
+          # land. The composed bases hardcode `namespace: shop` and
+          # `namespace: platform`, so those values survive into the rendered
+          # manifests and Argo CD tries to apply them there -- which the preview
+          # AppProject correctly refuses with "namespace shop is not permitted in
+          # project 'preview'". This is the kustomize namespace TRANSFORMER, which
+          # overrides what the bases declare.
+          namespace: "pr-{{.branch_slug}}"
           # The branch slug suffixes every resource, so a developer working
           # across two PRs can tell the stacks apart at a glance, and any
           # cluster-scoped or cross-namespace reference stays unambiguous. The
