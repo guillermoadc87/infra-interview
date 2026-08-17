@@ -16,8 +16,18 @@ kind: ApplicationSet
 metadata:
   name: pr-previews
   namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "10"
+  # NO sync-wave, deliberately.
+  #
+  # This carried `sync-wave: "10"` for tidiness and it deadlocked the root app:
+  # wave progression waits for earlier waves to become Healthy, but Argo CD
+  # reports NO health status for ApplicationSet resources at all (the field comes
+  # back empty), so the later wave waited forever on
+  # "waiting for healthy state of argoproj.io/ApplicationSet/platform-helm" and
+  # this appset was never created.
+  #
+  # It also had no business being ordered: a preview brings its own postgres and
+  # depends on nothing the platform appsets provide. The wave was pure decoration
+  # that bought a false dependency.
 spec:
   goTemplate: true
   goTemplateOptions: ["missingkey=error"]
