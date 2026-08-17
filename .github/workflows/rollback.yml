@@ -33,9 +33,9 @@ on:
         options: [dev, staging]
         required: true
       good_tag:
-        description: "A known-good tag to return to, e.g. dev-20260817T135450Z-15bdb10"
+        description: "Override: return to a specific tag. Leave blank to return to the previous tag this environment ran. One service only."
         type: string
-        required: true
+        required: false
 
 permissions:
   contents: read
@@ -48,6 +48,12 @@ jobs:
       services: ${{ steps.p.outputs.services }}
       owner: ${{ steps.p.outputs.owner }}
     steps:
+      # fetch-depth: 0 because the ROLLBACK TARGET IS THE HISTORY. The overlay's
+      # past revisions are the list of tags this environment has actually run.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - id: p
         shell: bash
         env:
@@ -56,25 +62,62 @@ jobs:
           SVC: ${{ inputs.service }}
         run: |
           set -euo pipefail
-          # The replacement tag must match the environment's own allow-tags regex,
-          # so the good tag has to belong to that environment to begin with.
-          if [[ "$TAG" != ${ENVN}-* ]]; then
-            echo "::error::'$TAG' is not a ${ENVN} tag -- rolling back ${ENVN} needs a ${ENVN}- tag, otherwise Image Updater will never select the replacement"
-            exit 1
-          fi
-          if [[ ! "$TAG" =~ ^[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}$ ]]; then
-            echo "::error::'$TAG' does not match the pipeline tag format"
-            exit 1
-          fi
           if [ "$SVC" = "all" ]; then
-            echo 'services=["api-service","inventory-service"]' >> "$GITHUB_OUTPUT"
+            SERVICES=(api-service inventory-service)
           else
-            printf 'services=["%s"]\n' "$SVC" >> "$GITHUB_OUTPUT"
+            SERVICES=("$SVC")
           fi
+
+          # A specific tag names ONE artifact; the services roll back
+          # independently because they fail independently.
+          if [ -n "$TAG" ] && [ "$SVC" = "all" ]; then
+            echo "::error::good_tag names a single artifact, so it cannot be combined with service='all'. Roll back one service, or leave good_tag blank to resolve each service's own previous tag."
+            exit 1
+          fi
+
+          entries=()
+          for svc in "${SERVICES[@]}"; do
+            if [ -n "$TAG" ]; then
+              tag="$TAG"
+            else
+              tag="$(./scripts/image-tag.sh previous "$svc" "$ENVN")"
+              echo "resolved ${svc}: previous ${ENVN} tag is ${tag}"
+            fi
+            # The replacement must match the environment's own allow-tags regex,
+            # or Image Updater will never select it and the rollback silently
+            # does nothing.
+            ./scripts/image-tag.sh validate "$tag" "$ENVN"
+            entries+=("$(printf '{"service":"%s","good_tag":"%s"}' "$svc" "$tag")")
+          done
+
+          printf 'services=[%s]\n' "$(IFS=,; echo "${entries[*]}")" >> "$GITHUB_OUTPUT"
           echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
+          # workflow_dispatch cannot populate a dropdown from data, so the next
+          # best thing is to print the real candidates: if the previous tag is
+          # not far enough back, re-run and paste one of these rather than
+          # hunting through GHCR for a tag that may never have been deployed.
+          {
+            echo "### Rollback plan: ${ENVN}"
+            echo "| service | rolling back to |"
+            echo "|---|---|"
+            for e in "${entries[@]}"; do
+              s="$(echo "$e" | python3 -c 'import json,sys; print(json.load(sys.stdin)["service"])')"
+              t="$(echo "$e" | python3 -c 'import json,sys; print(json.load(sys.stdin)["good_tag"])')"
+              echo "| \`${s}\` | \`${t}\` |"
+            done
+            echo ""
+            for svc in "${SERVICES[@]}"; do
+              echo "<details><summary>Tags <code>${svc}</code> has actually run on ${ENVN}</summary>"
+              echo ""
+              ./scripts/image-tag.sh history "$svc" "$ENVN" 10 | sed 's/^/- `/; s/$/`/'
+              echo ""
+              echo "</details>"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
   rollback:
-    name: ${{ matrix.service }} -> ${{ inputs.good_tag }}
+    name: ${{ matrix.service }} -> ${{ matrix.good_tag }}
     needs: plan
     runs-on: ubuntu-latest
     permissions:
@@ -83,7 +126,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: ${{ fromJSON(needs.plan.outputs.services) }}
+        # Objects, not bare names: each service resolves its own previous tag,
+        # because the services are deployed independently and their histories
+        # do not line up.
+        include: ${{ fromJSON(needs.plan.outputs.services) }}
     steps:
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -97,7 +143,7 @@ jobs:
         env:
           OWNER: ${{ needs.plan.outputs.owner }}
           SVC: ${{ matrix.service }}
-          TAG: ${{ inputs.good_tag }}
+          TAG: ${{ matrix.good_tag }}
           ENVN: ${{ inputs.environment }}
         run: |
           set -euo pipefail

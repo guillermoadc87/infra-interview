@@ -166,6 +166,35 @@ proxies can drift. "It passed staging" only means something if prod runs the sam
 digest, and the vulnerability scan only carries forward if the bytes do. The
 workflow asserts the digest is unchanged and fails loudly if not.
 
+### Decision 4a: Promotion resolves the tag from git rather than asking for it
+**Options**: (A) the operator supplies the exact source tag. (B) the workflow
+reads what the source environment runs.
+
+**Chosen**: B. `source_tag` is optional; blank means "promote what the source
+environment is running", read from `envs/<env>/kustomization.yaml` via
+`scripts/image-tag.sh`. The original form required a developer to locate a string
+like `dev-20260817T220707Z-638e6b6` in GHCR and paste it in — data entry for a
+value the repository already held, since Image Updater's whole job is writing that
+tag back into git.
+
+The interesting part is that this *tightens* the guarantee. The old validation was
+a shape regex, so any well-formed tag passed, including one built from an
+unrelated commit. Resolution makes "the artifact that was promoted" and "the
+artifact the source environment converged on" the same statement by construction.
+`scripts/image-tag.sh` is also the one component that writes the tag, so read and
+write cannot disagree about where it lives — which is what the "exactly one
+writer" claim in `gitops/README.md` depends on.
+
+**Trade-off**: promotion now depends on Image Updater having converged. Retagging
+staging does not itself move the staging overlay, so promoting to prod inside that
+window resolves the *previous* tag. Rather than block on it, the workflow compares
+the overlay against GHCR and warns when a newer `staging-` tag exists; resolving
+what staging has converged on stays correct, it just must not be silent.
+
+Rollback resolves the same way, one step further back, from the git history of the
+same file. History is the better source: git records what was **deployed**, the
+registry records what was **built**.
+
 ### Decision 5: Two variant axes rather than one
 `variants/tier/` (prod vs non-prod) and `variants/env/` (which environment).
 A two-valued tier cannot express a three-valued fact like `ENVIRONMENT`, and
@@ -293,6 +322,32 @@ Fixed in `gitops/bootstrap/spoke/postgres-credentials.example.yaml`, and it is a
 concrete argument for External Secrets: the right fix is one backend key synced
 into each namespace, not a human copying a Secret twice.
 
+### A second one, found by removing a manual step
+
+Making promotion resolve its own tag exposed a latent defect in the version it
+replaced. `source_tag` was a single string, but the promotion job fans out over a
+service matrix — so `service: all` sent one tag to every leg. The services are
+built independently, so their tags genuinely differ:
+
+| service | staging |
+|---|---|
+| `api-service` | `staging-20260817T222457Z-638e6b6` |
+| `inventory-service` | `staging-20260817T143153Z-15bdb10` |
+
+Promoting `all` to prod would have looked up
+`inventory-service:staging-20260817T222457Z-638e6b6`, a tag that does not exist.
+It stayed hidden because CI originally rebuilt both services on every merge, which
+kept their tags identical by accident; commit `55be4d5` ("build only services that
+changed") made divergence the norm and turned a latent bug into a live one.
+
+Per-service resolution removes it structurally rather than patching it — each leg
+resolves its own tag — and supplying an explicit tag is now rejected when combined
+with `all`, because one tag names one artifact and cannot mean two things.
+
+Worth recording because the manual step was hiding it: a human pasting a tag they
+had just looked up for *one* service would rarely notice they had implicitly
+claimed it applied to both.
+
 ---
 
 ## Production Considerations
@@ -338,6 +393,14 @@ into each namespace, not a human copying a Secret twice.
    resources from `terraform/main.tf` now that the init script owns it, since the
    in-cluster path needs no tunnel and works on a fresh spoke.
 7. **Postgres as a StatefulSet with a PVC**, or an external managed database.
+8. **A promotion trigger that is not a form at all.** Tag resolution removed the
+   typing, but `workflow_dispatch` still cannot populate a dropdown from data —
+   which is why the override and rollback candidate lists are printed into the run
+   summary instead of being selectable. A PR comment (`/promote staging`) or a
+   merge-triggered promotion would remove the remaining navigation; both were
+   deliberately left out here because promotion to staging should stay a human
+   decision, and auto-promoting on every merge would make staging a copy of dev
+   rather than a distinct gate.
 
 ---
 

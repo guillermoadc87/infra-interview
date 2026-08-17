@@ -114,6 +114,36 @@ changes during the retag.
   moving the overlay tag and carrying `settings.yaml` with it. Production sync is
   also manual, so a merge does not by itself deploy.
 
+### You do not tell it which tag to promote
+
+Pick a service and a target, and run it. `source_tag` is optional.
+
+The point of Image Updater's git write-back is that `envs/<env>/kustomization.yaml`
+*is* the record of what an environment runs — not a copy of it kept roughly in
+sync. So promotion reads it (`scripts/image-tag.sh current`) instead of asking a
+human to find that string in GHCR and paste it back in. The same helper writes
+the target overlay, so exactly one piece of code understands where the tag lives.
+
+This is stricter than a text field, not looser. What gets promoted is by
+construction the artifact the source environment actually converged on; the old
+form accepted any well-formed tag, including one from an unrelated commit.
+
+Resolution is **per service**, which is the only correct behaviour: the services
+build independently, so a merge touching one does not move the other and their
+tags legitimately differ. Filling in `source_tag` therefore restricts you to a
+single service — one tag names one artifact, and it cannot mean two things across
+a fan-out.
+
+Use `source_tag` only to deliberately promote something *older*. The run warns
+when it differs from what the source environment is running, so an override is
+never quiet.
+
+One caveat, because it bites in practice: a staging promotion only retags the
+registry, and Image Updater moves the staging overlay afterwards on its own
+schedule. Promote to prod in that window and you resolve the *previous* staging
+tag. The workflow compares the overlay against GHCR and warns when it sees a
+newer `staging-` tag, i.e. when the write-back has not landed yet.
+
 ## Rollback, and the trap in it
 
 **`git revert` does not roll back dev or staging.** The pipeline's rule is "the
@@ -137,6 +167,21 @@ To *stop* deployments rather than change them, scale Image Updater to zero, then
 revert. On **prod none of this applies** — nothing is racing you, so `git revert`
 plus a manual sync is a true rollback. That asymmetry is a large part of why prod
 is gated the way it is.
+
+`.github/workflows/rollback.yml` does the above for you, and like promotion it
+does not need to be told the tag: leave `good_tag` blank and it returns to the
+tag that environment ran *before* the current one.
+
+That list comes from the git history of `envs/<env>/kustomization.yaml`
+(`scripts/image-tag.sh previous`), which is a better source than the registry —
+git records what was **deployed**, GHCR records what was **built**, and those
+differ every time an image is superseded before it rolls out. The history is read
+by replaying each revision of the file rather than by diffing, so a revert shows
+up correctly as the environment running that tag a second time.
+
+`workflow_dispatch` cannot populate a dropdown from data, so if one step back is
+not far enough, the run prints the real candidate tags in its summary — copy one
+from there rather than going hunting in GHCR.
 
 ## Ordering
 

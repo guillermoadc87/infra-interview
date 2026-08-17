@@ -76,14 +76,32 @@ jobs:
           done < <(find gitops/apps \( -path '*/envs/*' -o -path '*/variants/*' \) -name '*.yaml')
           exit "$fail"
 
-      - name: every environment overlay pins a tag
+      - name: every environment overlay pins a tag, and it belongs to that environment
         shell: bash
         run: |
           set -euo pipefail
+          # The tag is not just a string CI checks for presence: promote.yml and
+          # rollback.yml RESOLVE from these files, treating them as the record of
+          # what each environment runs. That only holds if the value in
+          # envs/<env>/ is genuinely an <env> tag -- a staging tag sitting in the
+          # prod overlay would resolve, validate, and promote the wrong artifact.
+          # Enforce the grammar here, at the one place that owns it.
           fail=0
           for k in gitops/apps/*/envs/*/kustomization.yaml; do
-            grep -q 'newTag:' "$k" || {
-              echo "::error file=$k::no images[].newTag -- Image Updater would have nothing to write to"; fail=1; }
+            env="$(basename "$(dirname "$k")")"
+            tag="$(sed -n 's/^[[:space:]]*newTag:[[:space:]]*//p' "$k" | head -1)"
+            if [ -z "$tag" ]; then
+              echo "::error file=$k::no images[].newTag -- Image Updater would have nothing to write to"
+              fail=1
+              continue
+            fi
+            # <env>-<UTC timestamp>-<7-char sha>. The never-promoted placeholder
+            # (all zeroes) satisfies this deliberately, so a service awaiting its
+            # first promotion does not fail the build.
+            if [[ ! "$tag" =~ ^${env}-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}$ ]]; then
+              echo "::error file=$k::newTag '$tag' is not a well-formed '${env}' tag -- promotion resolves from this file and would move the wrong image"
+              fail=1
+            fi
           done
           exit "$fail"
 

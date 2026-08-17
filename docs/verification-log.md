@@ -237,6 +237,73 @@ The promotion carried the business setting into production and **did not drag th
 sandbox payment endpoint with it**. That is the structural guarantee the layout
 exists to provide, observed rather than argued.
 
+## 10. Promotion with nothing typed into the form
+
+`.github/workflows/promote.yml` run
+[32079201374](https://github.com/guillermoadc87/infra-interview/actions/runs/32079201374),
+dispatched as `-f service=api-service -f target_env=staging` with **no
+`source_tag`**:
+
+```
+resolved api-service: dev is running dev-20260817T220707Z-638e6b6
+source digest: sha256:37cb794a6e90e533e421c10ffb757b0bfbbeadfef4660c7016c9dd2b702b4f3b
+linux/amd64
+linux/arm64
+pushing sha256:37cb794a...b4f3b to ghcr.io/guillermoadc87/api-service:staging-20260817T230922Z-638e6b6
+```
+
+The tag came out of `envs/dev/kustomization.yaml`, not out of a human. Image
+Updater then closed the loop on its own — commit `c19d0db`, *"build: automatic
+update of api-service-staging"*, moving the staging overlay to
+`staging-20260817T230922Z-638e6b6`.
+
+### The guard, on a real run
+
+`-f service=all -f target_env=prod -f source_tag=staging-...222457Z-638e6b6`
+([32079268076](https://github.com/guillermoadc87/infra-interview/actions/runs/32079268076)):
+
+```
+##[error]source_tag names a single artifact, so it cannot be combined with
+service='all'. Promote one service, or leave source_tag blank to resolve each
+service independently.
+```
+
+It failed in `validate the request` — **before** the environment gate and before
+any registry write. The promote job shows `skipped`.
+
+### Per-service resolution, on a real run
+
+`rollback.yml -f service=all -f environment=dev`
+([32079389047](https://github.com/guillermoadc87/infra-interview/actions/runs/32079389047)),
+`good_tag` blank. The two services resolved *different* previous tags, which is
+the whole point — the job names record it:
+
+```
+api-service       -> dev-20260817T194635Z-47484cf   [cancelled]
+inventory-service -> dev-20260817T135450Z-15bdb10   [cancelled]
+```
+
+Cancelled deliberately after the plan job: the resolution is what was under test,
+and letting it finish would have pulled `/orders/summary` back out of dev.
+
+### The convergence warning fired on its own trap
+
+Immediately after the staging promotion above — while Image Updater had retagged
+nothing back into git yet — a prod promotion was dispatched
+([32079335497](https://github.com/guillermoadc87/infra-interview/actions/runs/32079335497)):
+
+```
+resolved api-service: staging is running staging-20260817T222457Z-638e6b6
+##[warning]api-service: staging overlay is at 'staging-20260817T222457Z-638e6b6'
+but the registry has newer 'staging-20260817T230922Z-638e6b6'. Argo CD Image
+Updater has not converged yet. Wait for its write-back commit, or pass an
+explicit source_tag.
+```
+
+This is the exact failure the check exists for: resolving from git during the
+write-back window returns the *previous* artifact, silently and plausibly. The
+run was cancelled after the plan job, so no prod tag was pushed and no PR opened.
+
 ## Bugs this round surfaced (all fixed, all found by running it)
 
 1. **Per-job tag race.** Each matrix job ran its own `date -u`, so one commit
@@ -272,12 +339,25 @@ exists to provide, observed rather than argued.
 10. **`kustomize edit set image` destroys comments** and reformats every list,
     turning a promotion PR into 20 lines of noise. Replaced with a surgical edit
     that produces a one-line diff.
+11. **One `source_tag` across a service matrix** — bug 1 again, from the other
+    end. Fixing the tag race made the two services' tags *stable*, not *equal*,
+    and `promote --service all` still fanned a single input out to both legs.
+    While CI rebuilt everything on every merge the tags stayed identical by
+    accident; `55be4d5` (build only what changed) ended that, leaving
+    `api-service` on `staging-...222457Z-638e6b6` and `inventory-service` on
+    `staging-...143153Z-15bdb10`. Promoting `all` to prod would have looked up a
+    tag that does not exist. Found by making promotion resolve the tag per
+    service, which cannot express the bug; supplying an explicit tag alongside
+    `all` is now rejected outright.
 
 ## Still not verified
 
-- **Rollback has not been staged.** The reasoning stands on the mechanism observed
-  here ("newest allowed tag wins", watched working three times), but no rollback
-  was performed.
+- **Rollback has not been staged.** Its *resolution* is now verified on a real run
+  (section 10: both services resolved their own previous tag from git history),
+  but the run was cancelled before the retag, so no rollback has been carried
+  through to a cluster. The reasoning still stands on the mechanism observed here
+  — "newest allowed tag wins", watched working three times — rather than on a
+  rollback actually performed.
 - **`inventory-service` was not promoted to prod** — only `api-service`, to keep
   the ladder demonstration short.
 - **GitHub Environment reviewer gates are not configured.** `promote.yml`
