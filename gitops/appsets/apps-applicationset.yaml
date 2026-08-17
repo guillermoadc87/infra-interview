@@ -27,7 +27,7 @@ spec:
     - matrix:
         generators:
           - git:
-              repoURL: https://github.com/OWNER/infra-interview
+              repoURL: https://github.com/guillermoadc87/infra-interview
               revision: main
               directories:
                 - path: gitops/apps/*/envs/*
@@ -49,7 +49,7 @@ spec:
     spec:
       project: apps
       source:
-        repoURL: https://github.com/OWNER/infra-interview
+        repoURL: https://github.com/guillermoadc87/infra-interview
         targetRevision: main
         path: "{{.path.path}}"
       destination:
@@ -94,7 +94,7 @@ spec:
       labels:
         image-updater: enabled
       annotations:
-        argocd-image-updater.argoproj.io/image-list: 'app=ghcr.io/OWNER/{{ $app }}'
+        argocd-image-updater.argoproj.io/image-list: 'app=ghcr.io/guillermoadc87/{{ $app }}'
         argocd-image-updater.argoproj.io/app.update-strategy: 'alphabetical'
         argocd-image-updater.argoproj.io/app.allow-tags: 'regexp:^{{ $env }}-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}$'
         argocd-image-updater.argoproj.io/app.platforms: 'linux/arm64'

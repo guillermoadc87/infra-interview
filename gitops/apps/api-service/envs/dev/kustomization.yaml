@@ -26,5 +26,5 @@ patches:
 # file that looks authoritative, gets reviewed as authoritative, and does
 # nothing. CI enforces this with a grep.
 images:
-  - name: ghcr.io/OWNER/api-service
+  - name: ghcr.io/guillermoadc87/api-service
     newTag: dev-00000000T000000Z-0000000

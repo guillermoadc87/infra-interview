@@ -21,7 +21,7 @@ spec:
     - matrix:
         generators:
           - git:
-              repoURL: https://github.com/OWNER/infra-interview
+              repoURL: https://github.com/guillermoadc87/infra-interview
               revision: main
               files:
                 - path: gitops/platform/*/envs/*/config.json
@@ -42,7 +42,7 @@ spec:
     spec:
       project: platform
       sources:
-        - repoURL: https://github.com/OWNER/infra-interview
+        - repoURL: https://github.com/guillermoadc87/infra-interview
           targetRevision: main
           ref: values
         - repoURL: "{{.chartRepo}}"

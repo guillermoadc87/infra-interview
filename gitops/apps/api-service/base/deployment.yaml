@@ -30,7 +30,7 @@ spec:
           # UNTAGGED ON PURPOSE. Every overlay supplies images[].newTag.
           # This is what makes Argo CD Image Updater's write-back-target=kustomization
           # work, and it is why `kustomize build base/` alone is not deployable.
-          image: ghcr.io/OWNER/api-service
+          image: ghcr.io/guillermoadc87/api-service
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

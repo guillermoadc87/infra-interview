@@ -18,5 +18,5 @@ patches:
 # ApplicationSet templatePatch), so this value only ever changes via the gated
 # promotion workflow.
 images:
-  - name: ghcr.io/OWNER/api-service
+  - name: ghcr.io/guillermoadc87/api-service
     newTag: prod-00000000T000000Z-0000000
