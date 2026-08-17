@@ -119,3 +119,100 @@ needs to learn the new value.
 
 Wired and verified on **dev** only. staging and prod have the manifests but were
 not cut over.
+
+---
+
+# Part 2 — dynamic credentials remove the ordering problem
+
+Everything above manages a *shared* password. Vault's database secrets engine
+removes it instead. Verified on dev.
+
+## What changed
+
+Vault now mints a **brand new PostgreSQL role per application per lease**, 1h
+TTL, revoked on expiry. There is no shared password, so there is never a moment
+when the app and the database disagree about one — the ordering window in Part 1
+does not exist.
+
+```
+$ vault list database/roles          $ vault list database/config
+api-service                          postgres-orders
+inventory-service                    postgres-inventory
+```
+
+The application runs as a generated role, not as `postgres`:
+
+```
+$ printenv DB_USER
+v-kubernet-api-serv-Xc7vvKgMHpP3HN8HCvbX-1786990837
+
+$ psql -c "SELECT DISTINCT usename FROM pg_stat_activity WHERE datname='orders'"
+ postgres                                              <- vault's admin connection
+ v-kubernet-api-serv-Xc7vvKgMHpP3HN8HCvbX-1786990837   <- the application
+```
+
+The `v-kubernet-` prefix is the proof of identity: Vault issued it in response to
+a **kubernetes** auth login, using the app's own ServiceAccount — not the root
+token, and not the External Secrets controller's identity.
+
+Functionally verified through the dynamic credential:
+
+```
+$ curl /readyz
+{"db":"ok","status":"ok","version":"15bdb10"}
+
+$ curl -X POST /orders -d '{"product_id":7,"quantity":3,"customer_id":"dynamic-creds"}'
+$ curl /orders/1
+{"id":1,"product_id":7,"quantity":3,"customer_id":"dynamic-creds","status":"pending",...}
+```
+
+## Least privilege, per application
+
+Each app has its own ServiceAccount, its own Vault role bound to that
+ServiceAccount in that namespace, and a policy allowing exactly one path:
+
+```hcl
+path "database/creds/api-service" { capabilities = ["read"] }
+```
+
+`api-service` cannot obtain `inventory-service`'s database access. Previously
+both read the same KV path through the ESO controller's single identity.
+
+## Three problems this had to solve
+
+**1. ESO's Vault provider is KV-only.** Dynamic engines need the separate
+`VaultDynamicSecret` *generator*, referenced from an ExternalSecret via
+`dataFrom.sourceRef.generatorRef`. Pointing the normal provider at
+`database/creds/...` does not work.
+
+**2. Nothing stable would own the schema.** Dynamic roles are disposable, so the
+first one to run `CREATE TABLE` would own the tables and take them with it when
+its lease expired. Fixed with permanent `app_orders` / `app_inventory` group
+roles: dynamic users are created `IN ROLE` the group, and revocation runs
+`REASSIGN OWNED BY ... TO <group>` before dropping the user.
+
+**3. `DB_USER` was hardcoded to `postgres`.** A dynamic credential generates a
+unique *role name*, not just a password. The pods authenticated as the admin user
+with a dynamic password and failed with `password authentication failed for user
+"postgres"` — while the old pods kept serving, so the rollout simply never moved.
+`DB_USER` now comes from the Secret too.
+
+## The cost, stated plainly
+
+Each ESO refresh mints a **new** database user and Reloader rolls the pods onto
+it, so **pods restart roughly every 45 minutes** (refresh 45m against a 1h TTL).
+That is the real price of dynamic credentials delivered as environment variables.
+
+Production alternatives, in order of how much they cost to adopt:
+
+- **Vault Agent sidecar** — writes the credential to a shared volume and renews
+  the lease in place, so the application re-reads it without restarting. The
+  usual choice for services where a 45-minute restart cycle is unacceptable.
+- **Longer TTL** — reduces churn without removing it.
+- **Application-native Vault client** — no restarts at all, but couples the app
+  to Vault.
+
+## Scope
+
+Dev only. staging and prod carry the manifests but were not cut over, and their
+Vaults still run dev mode with the static credential.
