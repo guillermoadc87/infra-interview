@@ -220,7 +220,7 @@ func handleOrderByID(w http.ResponseWriter, r *http.Request) {
 
 func listOrders(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.QueryContext(r.Context(),
-		"SELECT id, product_id, quantity, customer_id, status, created_at FROM orders ORDER BY created_at DESC LIMIT 100")
+		"SELECT id, product_id, quantity, customer_id, status, created_at FROM orders ORDER BY created_at DESC LIMIT 1")
 	if err != nil {
 		internalError(w, "listing orders", err)
 		return
