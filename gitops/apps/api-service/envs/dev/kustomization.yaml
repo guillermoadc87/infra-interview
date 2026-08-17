@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+components:
+  # CATEGORY 3 — mostly-static business settings. NEVER promoted.
+  # Physically outside envs/, so a promotion cannot reach them.
+  - ../../variants/tier/non-prod
+  - ../../variants/env/dev
+
+patches:
+  # CATEGORY 2 — Kubernetes settings. NEVER promoted. One concern per file.
+  - path: replicas.yaml
+  # CATEGORY 4 — non-static business settings. PROMOTED as a verbatim file copy.
+  - path: settings.yaml
+
+# CATEGORY 1 — application version. PROMOTED.
+#
+# SINGLE SOURCE OF TRUTH for the container tag. Written by Argo CD Image Updater
+# (dev/staging) or by .github/workflows/promote.yml.
+#
+# Do NOT also set .image in a patch file. Kustomize's ImageTagTransformer runs
+# AFTER patches, so `images:` would silently win and the patch would become a
+# file that looks authoritative, gets reviewed as authoritative, and does
+# nothing. CI enforces this with a grep.
+images:
+  - name: ghcr.io/OWNER/api-service
+    newTag: dev-00000000T000000Z-0000000

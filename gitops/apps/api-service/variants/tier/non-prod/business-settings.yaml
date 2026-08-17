@@ -1,0 +1,20 @@
+# CONFIG CATEGORY 3 — "mostly static" business settings, tier-scoped.
+#
+# These are a function of "is this real customer traffic", not of which
+# environment it is. They are NEVER promoted: there is no file under envs/ that
+# names PAYMENTS_URL, so no promotion operation can move the sandbox payment
+# endpoint into production. That is a structural guarantee, not a convention.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+spec:
+  template:
+    spec:
+      containers:
+        - name: api-service
+          env:
+            - name: PAYMENTS_URL
+              value: https://payments.sandbox.example.com
+            - name: LOG_LEVEL
+              value: debug

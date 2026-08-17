@@ -1,0 +1,7 @@
+# CONFIG CATEGORY 2 — Kubernetes settings. Never promoted.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+spec:
+  replicas: 2

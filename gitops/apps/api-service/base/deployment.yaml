@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+spec:
+  # spec.replicas is DELIBERATELY ABSENT.
+  # Owner: envs/<env>/replicas.yaml (config category 2). If it were set here,
+  # every environment would inherit a number that only one of them wants.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: api-service
+  template:
+    metadata:
+      labels:
+        app: api-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api-service
+          # UNTAGGED ON PURPOSE. Every overlay supplies images[].newTag.
+          # This is what makes Argo CD Image Updater's write-back-target=kustomization
+          # work, and it is why `kustomize build base/` alone is not deployable.
+          image: ghcr.io/OWNER/api-service
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # --- identical in every environment => belongs in base ---
+            - name: PORT
+              value: "8080"
+            - name: DB_HOST
+              value: postgres.platform.svc.cluster.local
+            - name: DB_NAME
+              value: orders
+            - name: DB_USER
+              value: postgres
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            # Everything else is environment-scoped and lives elsewhere:
+            #   FEATURE_ORDER_LIMIT   -> envs/<env>/settings.yaml         (cat 4, PROMOTED)
+            #   PAYMENTS_URL, LOG_LEVEL -> variants/tier/<tier>/          (cat 3, never promoted)
+            #   ENVIRONMENT           -> variants/env/<env>/              (cat 3, never promoted)
+          startupProbe:
+            # Covers slow first start (DB connect retry) without a lax livenessProbe.
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            # /healthz is process liveness ONLY and must never touch the database.
+            # If it did, a Postgres blip would restart every pod and turn a
+            # dependency outage into an application outage.
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          readinessProbe:
+            # /readyz DOES check the database: pull the pod out of the Service,
+            # but do not kill it. It will re-join when the DB comes back.
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              # Memory limit yes, CPU limit no: a CPU limit here buys nothing and
+              # causes throttling under burst. Memory is the one that must be bounded.
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

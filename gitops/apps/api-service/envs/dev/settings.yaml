@@ -1,0 +1,18 @@
+# CONFIG CATEGORY 4 — non-static business settings. PROMOTED.
+#
+# This file is deliberately self-contained and copyable: strategic merge uses
+# `name` as the merge key for both `containers` and `env`, so copying it into
+# envs/staging/ merges FEATURE_ORDER_LIMIT without disturbing anything else in
+# the container. That property is the entire reason for one concern per file.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+spec:
+  template:
+    spec:
+      containers:
+        - name: api-service
+          env:
+            - name: FEATURE_ORDER_LIMIT
+              value: "100"

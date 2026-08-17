@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate: a second Postgres pod attaching to the same
+    # data location is never what you want, even with an emptyDir.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            # Sourced from a Secret created once per cluster by
+            # gitops/bootstrap/spoke/. This is the ONE thing deliberately not in
+            # git -- the repo is public.
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            tcpSocket:
+              port: postgres
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: postgres-init
+        - name: data
+          # DELIBERATELY ephemeral, carried over unchanged from the Helm chart.
+          #
+          # This is a development fixture, not a database. Every restart wipes it
+          # and re-runs the init script -- which is the only reason the init
+          # script works at all. Adding a PVC would make init a one-shot that
+          # then silently stops applying, and an RWO volume under a Deployment
+          # deadlocks on upgrade. Persistent storage is Path 1's subject; the
+          # GitOps structure is identical whether this is an emptyDir, a
+          # StatefulSet, or RDS.
+          emptyDir: {}

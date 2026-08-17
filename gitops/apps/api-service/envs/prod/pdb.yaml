@@ -1,0 +1,13 @@
+# CONFIG CATEGORY 2 — a prod-only Kubernetes resource.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-service
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      # MUST be explicit. Kustomize's builtin fieldspec for a PDB's
+      # spec/selector/matchLabels is create:false, so `labels.includeSelectors`
+      # in the base will NOT populate this for us.
+      app: api-service

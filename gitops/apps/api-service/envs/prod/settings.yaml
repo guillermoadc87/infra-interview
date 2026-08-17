@@ -1,0 +1,17 @@
+# CONFIG CATEGORY 4 — non-static business settings. PROMOTED.
+#
+# Deliberately lags staging (100) to show the model working: prod picks this up
+# when someone promotes it, not before. The drift is visible in a diff, which is
+# the point.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+spec:
+  template:
+    spec:
+      containers:
+        - name: api-service
+          env:
+            - name: FEATURE_ORDER_LIMIT
+              value: "25"

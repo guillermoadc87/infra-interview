@@ -1,0 +1,15 @@
+# CONFIG CATEGORY 4 — non-static business settings. PROMOTED.
+# Byte-identical to envs/dev/settings.yaml: this is what a completed dev->staging
+# promotion of this category looks like.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+spec:
+  template:
+    spec:
+      containers:
+        - name: api-service
+          env:
+            - name: FEATURE_ORDER_LIMIT
+              value: "100"

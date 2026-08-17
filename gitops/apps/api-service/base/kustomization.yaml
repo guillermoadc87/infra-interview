@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Set once here and matched by every Application's destination.namespace.
+# Environment identity comes from the CLUSTER, not the namespace -- so namespace
+# names are identical on every spoke and no manifest contains the string
+# "dev"/"staging"/"prod" anywhere.
+namespace: shop
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - wait-for-postgres-job.yaml
+
+labels:
+  - pairs:
+      app: api-service
+      app.kubernetes.io/name: api-service
+      app.kubernetes.io/part-of: shop
+    # Safe with the PreSync Job above: kustomize's builtin fieldspec for
+    # batch/Job spec/selector/matchLabels is create:false, so it will not
+    # fabricate an immutable selector on a Job that doesn't declare one.
+    includeSelectors: true
