@@ -16,18 +16,25 @@ on:
         type: choice
         options: [api-service, inventory-service, all]
         required: true
-      source_tag:
-        description: "Exact source tag, e.g. dev-20260816T210344Z-1a2b3c4"
-        type: string
-        required: true
       target_env:
         description: Target environment
         type: choice
         options: [staging, prod]
         required: true
+      source_tag:
+        description: "Override: promote an OLDER tag instead. Leave blank to promote whatever the source environment is running. One service only."
+        type: string
+        required: false
 
 permissions:
   contents: read
+
+# Promotion is now a two-dropdown click, so two people can trigger one within
+# seconds of each other. Serialise per target: concurrent prod runs would race
+# the same overlay file and the same promote/<svc>-<tag> branch name.
+concurrency:
+  group: promote-${{ inputs.target_env }}
+  cancel-in-progress: false
 
 jobs:
   # Validation runs OUTSIDE the protected environment so a reviewer is never
@@ -38,7 +45,10 @@ jobs:
     outputs:
       services: ${{ steps.p.outputs.services }}
       owner: ${{ steps.p.outputs.owner }}
+      source_env: ${{ steps.p.outputs.source_env }}
     steps:
+      - uses: actions/checkout@v4
+
       - id: p
         shell: bash
         env:
@@ -49,24 +59,94 @@ jobs:
           set -euo pipefail
           # Enforce the ladder: you cannot jump dev -> prod.
           case "$TGT" in
-            staging) expect=dev ;;
-            prod)    expect=staging ;;
+            staging) SRC_ENV=dev ;;
+            prod)    SRC_ENV=staging ;;
             *) echo "::error::unsupported target '$TGT'"; exit 1 ;;
           esac
-          if [[ "$SRC" != ${expect}-* ]]; then
-            echo "::error::ladder violation: '$TGT' must be promoted from a '${expect}-' tag, got '$SRC'"
-            exit 1
-          fi
-          if [[ ! "$SRC" =~ ^[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}$ ]]; then
-            echo "::error::'$SRC' does not match the pipeline tag format"
-            exit 1
-          fi
+
           if [ "$SVC" = "all" ]; then
-            echo 'services=["api-service","inventory-service"]' >> "$GITHUB_OUTPUT"
+            SERVICES=(api-service inventory-service)
           else
-            printf 'services=["%s"]\n' "$SVC" >> "$GITHUB_OUTPUT"
+            SERVICES=("$SVC")
           fi
+
+          # An explicit tag names ONE artifact, so it cannot be applied across a
+          # fan-out. Before per-service resolution this was silently wrong:
+          # 'all' sent api-service's tag to the inventory-service leg, and the
+          # two services genuinely differ (they are built independently, so a
+          # merge touching one does not move the other).
+          if [ -n "$SRC" ] && [ "$SVC" = "all" ]; then
+            echo "::error::source_tag names a single artifact, so it cannot be combined with service='all'. Promote one service, or leave source_tag blank to resolve each service independently."
+            exit 1
+          fi
+
+          # Build the matrix as objects: {service, source_tag}. Each service
+          # resolves its own tag from the source environment's overlay, which is
+          # the authoritative record of what that environment actually runs --
+          # Image Updater writes it there.
+          entries=()
+          for svc in "${SERVICES[@]}"; do
+            if [ -n "$SRC" ]; then
+              tag="$SRC"
+              running="$(./scripts/image-tag.sh current "$svc" "$SRC_ENV")"
+              if [ "$tag" != "$running" ]; then
+                echo "::warning::override in use: promoting '${tag}' but ${SRC_ENV} is currently running '${running}'"
+              fi
+            else
+              tag="$(./scripts/image-tag.sh current "$svc" "$SRC_ENV")"
+              echo "resolved ${svc}: ${SRC_ENV} is running ${tag}"
+            fi
+            # Shape + ladder + placeholder, on the RESOLVED tag. Validation is
+            # not weakened by resolution; it is applied to what will actually
+            # be promoted.
+            ./scripts/image-tag.sh validate "$tag" "$SRC_ENV"
+            entries+=("$(printf '{"service":"%s","source_tag":"%s"}' "$svc" "$tag")")
+          done
+
+          printf 'services=[%s]\n' "$(IFS=,; echo "${entries[*]}")" >> "$GITHUB_OUTPUT"
           echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          echo "source_env=${SRC_ENV}" >> "$GITHUB_OUTPUT"
+
+          # Show the reviewer exactly what will move, BEFORE the environment
+          # gate asks them to approve it.
+          {
+            echo "### Promotion plan: ${SRC_ENV} -> ${TGT}"
+            echo "| service | promoting | resolved from |"
+            echo "|---|---|---|"
+            for e in "${entries[@]}"; do
+              s="$(echo "$e" | python3 -c 'import json,sys; print(json.load(sys.stdin)["service"])')"
+              t="$(echo "$e" | python3 -c 'import json,sys; print(json.load(sys.stdin)["source_tag"])')"
+              src_desc="\`envs/${SRC_ENV}\` overlay"
+              [ -n "$SRC" ] && src_desc="operator override"
+              echo "| \`${s}\` | \`${t}\` | ${src_desc} |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Promoting to staging only retags the registry; Image Updater then moves
+      # the staging overlay on its own schedule. So immediately after a staging
+      # promotion the overlay still names the PREVIOUS tag, and a prod promotion
+      # resolved from it would quietly promote the older artifact.
+      #
+      # Resolving what staging has CONVERGED on is the defensible behaviour, so
+      # this warns rather than fails -- but it must not be silent.
+      - name: warn if the source environment has not converged
+        if: inputs.target_env == 'prod' && inputs.source_tag == ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ steps.p.outputs.owner }}
+          SVCS: ${{ steps.p.outputs.services }}
+        run: |
+          set -euo pipefail
+          echo "$SVCS" | jq -r '.[] | "\(.service) \(.source_tag)"' | while read -r svc pinned; do
+            newest="$(gh api --paginate \
+              "/users/${OWNER}/packages/container/${svc}/versions" \
+              --jq '.[].metadata.container.tags[]?' 2>/dev/null \
+              | grep -E '^staging-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}$' | sort | tail -1 || true)"
+            if [ -n "$newest" ] && [ "$newest" != "$pinned" ] && [[ "$newest" > "$pinned" ]]; then
+              echo "::warning::${svc}: staging overlay is at '${pinned}' but the registry has newer '${newest}'. Argo CD Image Updater has not converged yet. Wait for its write-back commit, or pass an explicit source_tag."
+            fi
+          done
 
   promote:
     name: ${{ matrix.service }} -> ${{ inputs.target_env }}
@@ -83,7 +163,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: ${{ fromJSON(needs.plan.outputs.services) }}
+        # Objects, not bare names: each leg carries the tag resolved for THAT
+        # service. The two services are built independently and their tags
+        # diverge, so one shared input could never have been correct.
+        include: ${{ fromJSON(needs.plan.outputs.services) }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -99,7 +182,7 @@ jobs:
         env:
           OWNER: ${{ needs.plan.outputs.owner }}
           SVC: ${{ matrix.service }}
-          SRC: ${{ inputs.source_tag }}
+          SRC: ${{ matrix.source_tag }}
           TGT: ${{ inputs.target_env }}
         run: |
           set -euo pipefail
@@ -144,7 +227,7 @@ jobs:
           SVC: ${{ matrix.service }}
           DST_TAG: ${{ steps.retag.outputs.dst_tag }}
           DIGEST: ${{ steps.retag.outputs.digest }}
-          SRC: ${{ inputs.source_tag }}
+          SRC: ${{ matrix.source_tag }}
         run: |
           set -euo pipefail
           BRANCH="promote/${SVC}-${DST_TAG}"
@@ -154,26 +237,12 @@ jobs:
 
           OVERLAY="gitops/apps/${SVC}/envs/prod"
 
-          # Surgical, single-line edit -- deliberately NOT `kustomize edit set image`.
-          #
-          # `kustomize edit` round-trips the file through its YAML marshaller,
-          # which reformats every list and DELETES all comments. The first version
-          # of this workflow used it and produced a promotion PR whose diff was 20
-          # lines of reindentation with the real change buried inside. A promotion
-          # PR exists to be reviewed by a human, so its diff must be one line.
-          python3 - "$OVERLAY/kustomization.yaml" "ghcr.io/${OWNER}/${SVC}" "${DST_TAG}" <<'PY'
-          import re, sys
-          path, image, tag = sys.argv[1], sys.argv[2], sys.argv[3]
-          src = open(path).read()
-          # Replace only the newTag that follows this image's `name:` line.
-          pattern = re.compile(
-              r'(- name:\s*' + re.escape(image) + r'\s*\n\s*newTag:\s*)(\S+)')
-          new, n = pattern.subn(lambda m: m.group(1) + tag, src, count=1)
-          if n != 1:
-              sys.exit(f"expected exactly one newTag for {image} in {path}, found {n}")
-          open(path, 'w').write(new)
-          print(f"set {image} newTag -> {tag}")
-          PY
+          # One writer for category 1. The same helper that READ the source tag
+          # writes the target one, so the two can never disagree about which
+          # field is authoritative. It edits a single line and preserves
+          # comments -- a promotion PR exists to be reviewed by a human, so its
+          # diff must not be buried in reformatting.
+          ./scripts/image-tag.sh set "$SVC" prod "$DST_TAG"
 
           # Category 4 travels WITH the version: a promotion is atomically "this
           # image plus the business settings it was validated with".
@@ -207,7 +276,7 @@ jobs:
             echo "### ${{ matrix.service }} promoted to ${{ inputs.target_env }}"
             echo "| field | value |"
             echo "|---|---|"
-            echo "| from | \`${{ inputs.source_tag }}\` |"
+            echo "| from | \`${{ matrix.source_tag }}\` (${{ needs.plan.outputs.source_env }}) |"
             echo "| to | \`${{ steps.retag.outputs.dst_tag }}\` |"
             echo "| digest | \`${{ steps.retag.outputs.digest }}\` (unchanged) |"
             echo "| approved by | \`${{ github.actor }}\` |"
