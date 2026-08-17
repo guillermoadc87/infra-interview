@@ -1,0 +1,197 @@
+name: promote
+
+# Promotion moves an EXISTING artifact between environments by retagging the
+# same digest. It never rebuilds.
+#
+# Why that matters: a rebuild from the same commit is not the same artifact.
+# Base image tags move, module proxies can serve different bytes, timestamps
+# differ. "It passed staging" only means something if production runs the
+# identical digest -- and the Trivy result that passed in CI only carries
+# forward if the bytes carry forward.
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service to promote
+        type: choice
+        options: [api-service, inventory-service, all]
+        required: true
+      source_tag:
+        description: "Exact source tag, e.g. dev-20260816T210344Z-1a2b3c4"
+        type: string
+        required: true
+      target_env:
+        description: Target environment
+        type: choice
+        options: [staging, prod]
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Validation runs OUTSIDE the protected environment so a reviewer is never
+  # asked to approve a request that was malformed to begin with.
+  plan:
+    name: validate the request
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.p.outputs.services }}
+      owner: ${{ steps.p.outputs.owner }}
+    steps:
+      - id: p
+        shell: bash
+        env:
+          SRC: ${{ inputs.source_tag }}
+          TGT: ${{ inputs.target_env }}
+          SVC: ${{ inputs.service }}
+        run: |
+          set -euo pipefail
+          # Enforce the ladder: you cannot jump dev -> prod.
+          case "$TGT" in
+            staging) expect=dev ;;
+            prod)    expect=staging ;;
+            *) echo "::error::unsupported target '$TGT'"; exit 1 ;;
+          esac
+          if [[ "$SRC" != ${expect}-* ]]; then
+            echo "::error::ladder violation: '$TGT' must be promoted from a '${expect}-' tag, got '$SRC'"
+            exit 1
+          fi
+          if [[ ! "$SRC" =~ ^[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}$ ]]; then
+            echo "::error::'$SRC' does not match the pipeline tag format"
+            exit 1
+          fi
+          if [ "$SVC" = "all" ]; then
+            echo 'services=["api-service","inventory-service"]' >> "$GITHUB_OUTPUT"
+          else
+            printf 'services=["%s"]\n' "$SVC" >> "$GITHUB_OUTPUT"
+          fi
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+  promote:
+    name: ${{ matrix.service }} -> ${{ inputs.target_env }}
+    needs: plan
+    runs-on: ubuntu-latest
+    # THE GATE. Configure 'prod' in Settings -> Environments with required
+    # reviewers; leave 'staging' unprotected so it promotes immediately. Same
+    # job, different policy, enforced by GitHub rather than by this file.
+    environment: ${{ inputs.target_env }}
+    permissions:
+      contents: write # to open the promotion PR for prod
+      packages: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.plan.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: retag
+        name: retag the same digest
+        shell: bash
+        env:
+          OWNER: ${{ needs.plan.outputs.owner }}
+          SVC: ${{ matrix.service }}
+          SRC: ${{ inputs.source_tag }}
+          TGT: ${{ inputs.target_env }}
+        run: |
+          set -euo pipefail
+          REPO="ghcr.io/${OWNER}/${SVC}"
+
+          SRC_DIGEST="$(docker buildx imagetools inspect "${REPO}:${SRC}" --format '{{ .Manifest.Digest }}')"
+          echo "source digest: ${SRC_DIGEST}"
+
+          # Prove arm64 is present BEFORE promoting to a cluster that can only
+          # run arm64. Catching this here beats catching it as CrashLoopBackOff.
+          docker buildx imagetools inspect "${REPO}@${SRC_DIGEST}" --raw \
+            | jq -r '.manifests[] | select(.platform.architecture != "unknown")
+                     | "\(.platform.os)/\(.platform.architecture)"' | tee /tmp/plat
+          grep -qx 'linux/arm64' /tmp/plat \
+            || { echo "::error::${REPO}:${SRC} has no linux/arm64 manifest"; exit 1; }
+
+          SHA_SUFFIX="${SRC##*-}"
+          DST_TAG="${TGT}-$(date -u +%Y%m%dT%H%M%SZ)-${SHA_SUFFIX}"
+
+          # Registry-side manifest copy. No layers move; no rebuild.
+          docker buildx imagetools create --tag "${REPO}:${DST_TAG}" "${REPO}@${SRC_DIGEST}"
+
+          DST_DIGEST="$(docker buildx imagetools inspect "${REPO}:${DST_TAG}" --format '{{ .Manifest.Digest }}')"
+          if [ "${SRC_DIGEST}" != "${DST_DIGEST}" ]; then
+            echo "::error::digest changed during retag (${SRC_DIGEST} -> ${DST_DIGEST}); the promoted artifact is NOT bit-identical. Switch this step to 'crane copy'."
+            exit 1
+          fi
+          echo "dst_tag=${DST_TAG}" >> "$GITHUB_OUTPUT"
+          echo "digest=${SRC_DIGEST}" >> "$GITHUB_OUTPUT"
+
+      # staging is watched by Image Updater, so the retag alone is enough -- it
+      # will notice the new staging- tag and write it back to git itself.
+      # prod is NOT watched by anything, deliberately, so the tag has to be moved
+      # in git explicitly. That is done as a pull request: for production, the
+      # merge button is the deploy button.
+      - name: open the production promotion PR
+        if: inputs.target_env == 'prod'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ needs.plan.outputs.owner }}
+          SVC: ${{ matrix.service }}
+          DST_TAG: ${{ steps.retag.outputs.dst_tag }}
+          DIGEST: ${{ steps.retag.outputs.digest }}
+          SRC: ${{ inputs.source_tag }}
+        run: |
+          set -euo pipefail
+          BRANCH="promote/${SVC}-${DST_TAG}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+          OVERLAY="gitops/apps/${SVC}/envs/prod"
+          # Same field, same tool the robot uses on dev/staging -- so there is
+          # exactly one writer of the image tag per environment.
+          ( cd "$OVERLAY" && kustomize edit set image "ghcr.io/${OWNER}/${SVC}:${DST_TAG}" ) 2>/dev/null \
+            || sed -i "s|newTag: .*|newTag: ${DST_TAG}|" "${OVERLAY}/kustomization.yaml"
+
+          # Category 4 travels WITH the version: a promotion is atomically "this
+          # image plus the business settings it was validated with".
+          cp "gitops/apps/${SVC}/envs/staging/settings.yaml" "${OVERLAY}/settings.yaml"
+
+          git add "$OVERLAY"
+          git commit -m "promote(${SVC}): ${DST_TAG} to prod
+
+          Retagged from ${SRC}
+          Digest ${DIGEST} (unchanged -- same bytes as staging)"
+          git push -u origin "$BRANCH"
+
+          gh pr create --base main --head "$BRANCH" \
+            --title "promote(${SVC}): ${DST_TAG} to prod" \
+            --body "Promotes the **same digest** already running in staging.
+
+          | field | value |
+          |---|---|
+          | service | \`${SVC}\` |
+          | from | \`${SRC}\` |
+          | to | \`${DST_TAG}\` |
+          | digest | \`${DIGEST}\` |
+
+          No rebuild occurred. Merging moves the prod overlay; production sync is
+          manual by design, so this PR merging does not by itself deploy."
+
+      - name: summary
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.service }} promoted to ${{ inputs.target_env }}"
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| from | \`${{ inputs.source_tag }}\` |"
+            echo "| to | \`${{ steps.retag.outputs.dst_tag }}\` |"
+            echo "| digest | \`${{ steps.retag.outputs.digest }}\` (unchanged) |"
+            echo "| approved by | \`${{ github.actor }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

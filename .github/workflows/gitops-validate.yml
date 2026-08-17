@@ -112,9 +112,10 @@ jobs:
           # templatePatch is an opaque string that neither the CRD schema nor
           # kubectl validates, so a quoting mistake in the allow-tags regex would
           # only surface as a broken Application inside the cluster.
+          python3 -m pip install --quiet pyyaml
           fail=0
           for f in gitops/appsets/*.yaml; do
-            python3 -c "import sys,yaml;[yaml.safe_load(d) for d in yaml.safe_load_all(open(sys.argv[1]))]" "$f" \
+            python3 -c "import sys,yaml;list(yaml.safe_load_all(open(sys.argv[1])))" "$f" \
               || { echo "::error file=$f::not valid YAML"; fail=1; }
           done
 
