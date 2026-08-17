@@ -15,4 +15,4 @@ patches:
 # CATEGORY 1 — see envs/dev/kustomization.yaml for why this is the sole owner.
 images:
   - name: ghcr.io/guillermoadc87/inventory-service
-    newTag: staging-00000000T000000Z-0000000
+    newTag: staging-20260817T143153Z-15bdb10
