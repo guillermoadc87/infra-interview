@@ -1,0 +1,15 @@
+# CONFIG CATEGORY 4 — non-static business settings. PROMOTED.
+# Self-contained and copyable: strategic merge keys on container/env name, so
+# copying this file into another env merges cleanly.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-service
+spec:
+  template:
+    spec:
+      containers:
+        - name: inventory-service
+          env:
+            - name: LOW_STOCK_THRESHOLD
+              value: "10"

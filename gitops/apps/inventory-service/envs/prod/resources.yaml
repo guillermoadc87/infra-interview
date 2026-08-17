@@ -1,0 +1,17 @@
+# CONFIG CATEGORY 2 — Kubernetes settings. Never promoted.
+# Only prod overrides the base resource envelope; dev and staging inherit it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-service
+spec:
+  template:
+    spec:
+      containers:
+        - name: inventory-service
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
