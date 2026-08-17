@@ -1,0 +1,127 @@
+name: gitops-validate
+
+# Every invariant this design relies on is checked here. Without these the
+# "conventions" in gitops/README.md are just prose that drifts.
+on:
+  push:
+    branches: [main]
+    paths: ["gitops/**", ".github/workflows/gitops-validate.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["gitops/**", ".github/workflows/gitops-validate.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install kustomize + kubeconform
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.5.0/kustomize_v5.5.0_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin kustomize
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+
+      - name: every overlay builds and is valid Kubernetes
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Discovered, not hardcoded: an environment or application added
+          # tomorrow is gated automatically.
+          #
+          # Components (kind: Component) are excluded deliberately -- they carry
+          # only patches and no resources, so building one standalone fails with
+          # "no resource matches strategic merge patch". They are exercised
+          # transitively when the overlays that include them are built.
+          mapfile -t dirs < <(grep -rLi '^kind:[[:space:]]*Component' \
+                                --include=kustomization.yaml -r gitops \
+                              | xargs -n1 dirname | sort -u)
+          [ "${#dirs[@]}" -gt 0 ] || { echo "::error::no kustomizations found"; exit 1; }
+
+          fail=0
+          for d in "${dirs[@]}"; do
+            echo "::group::$d"
+            if ! out="$(kustomize build "$d" 2>&1)"; then
+              echo "::error file=$d/kustomization.yaml::kustomize build failed"
+              echo "$out"; fail=1; echo "::endgroup::"; continue
+            fi
+            printf '%s\n' "$out" | kubeconform -strict -summary \
+              -ignore-missing-schemas -kubernetes-version 1.31.0 || fail=1
+            echo "::endgroup::"
+          done
+          exit "$fail"
+
+      - name: the image tag has exactly one owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Kustomize's ImageTagTransformer runs AFTER patches, so if a patch
+          # file also set .image, `images:` would silently win and the patch
+          # would become a file that reads as authoritative and does nothing.
+          # The invariant is therefore: nothing under envs/ or variants/ may name
+          # an image. base/ may -- that is where the untagged application image
+          # is declared, and where the PreSync hook Job names its own (unrelated)
+          # postgres image.
+          fail=0
+          while IFS= read -r f; do
+            if grep -qE '^\s+image:\s' "$f"; then
+              echo "::error file=$f::sets .image in an overlay -- use images[].newTag in that overlay's kustomization.yaml instead"
+              fail=1
+            fi
+          done < <(find gitops/apps \( -path '*/envs/*' -o -path '*/variants/*' \) -name '*.yaml')
+          exit "$fail"
+
+      - name: every environment overlay pins a tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          for k in gitops/apps/*/envs/*/kustomization.yaml; do
+            grep -q 'newTag:' "$k" || {
+              echo "::error file=$k::no images[].newTag -- Image Updater would have nothing to write to"; fail=1; }
+          done
+          exit "$fail"
+
+      - name: platform JSON agrees with its directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          # appName is redundant with path segment 2 on purpose (it makes the
+          # generated Application name readable without segment arithmetic), so
+          # assert the two can never drift apart.
+          fail=0
+          for j in gitops/platform/*/envs/*/*.json; do
+            want="$(basename "$(dirname "$(dirname "$(dirname "$j")")")")"
+            got="$(jq -r .appName "$j")"
+            [ "$want" = "$got" ] || {
+              echo "::error file=$j::appName is '$got' but the directory says '$want'"; fail=1; }
+            jq -e .namespace "$j" >/dev/null || {
+              echo "::error file=$j::missing 'namespace'"; fail=1; }
+          done
+          exit "$fail"
+
+      - name: applicationsets parse and keep production ungoverned by Image Updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          # templatePatch is an opaque string that neither the CRD schema nor
+          # kubectl validates, so a quoting mistake in the allow-tags regex would
+          # only surface as a broken Application inside the cluster.
+          fail=0
+          for f in gitops/appsets/*.yaml; do
+            python3 -c "import sys,yaml;[yaml.safe_load(d) for d in yaml.safe_load_all(open(sys.argv[1]))]" "$f" \
+              || { echo "::error file=$f::not valid YAML"; fail=1; }
+          done
+
+          # The production safety boundary: prod must never receive the
+          # image-updater label or annotations.
+          if ! grep -q 'ne \$env "prod"' gitops/appsets/apps-applicationset.yaml; then
+            echo "::error::apps appset no longer excludes prod from Image Updater"
+            fail=1
+          fi
+          exit "$fail"

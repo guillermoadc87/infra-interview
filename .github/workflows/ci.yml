@@ -1,0 +1,156 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    # CRITICAL: without this, Image Updater's write-back commit to
+    # gitops/**/kustomization.yaml triggers a build, which pushes an image, which
+    # Image Updater picks up, which commits again -- a slow infinite loop that
+    # costs money and looks like a haunted repository.
+    paths-ignore:
+      - "gitops/**"
+      - "docs/**"
+      - "**.md"
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Computes which services actually changed. This always runs and always
+  # reports, so a PR touching only docs still satisfies a required status check
+  # -- which a workflow-level path filter would not, since a skipped workflow
+  # reports nothing and the PR waits forever.
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.detect.outputs.services }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+            git fetch -q origin "${{ github.base_ref }}"
+            changed="$(git diff --name-only "${base}...HEAD")"
+          else
+            before="${{ github.event.before }}"
+            # All-zeros means a new branch with no diff base; build everything.
+            if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+              changed="$(git ls-files)"
+            else
+              changed="$(git diff --name-only "$before" "${{ github.sha }}")"
+            fi
+          fi
+
+          svcs=()
+          for s in api-service inventory-service; do
+            if grep -qE "^(apps/${s}/|\.github/workflows/ci\.yml)" <<<"$changed"; then
+              svcs+=("$s")
+            fi
+          done
+
+          json="$(printf '%s\n' "${svcs[@]+"${svcs[@]}"}" | grep -v '^$' | jq -R . | jq -sc .)"
+          echo "services=${json}" >> "$GITHUB_OUTPUT"
+          echo "building: ${json}" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: build ${{ matrix.service }}
+    needs: changes
+    if: needs.changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # the only elevation, required to push to GHCR
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/${{ matrix.service }}/go.mod
+          # Per-service cache key, so changing one service does not invalidate
+          # the other's module cache.
+          cache-dependency-path: apps/${{ matrix.service }}/go.sum
+
+      - name: gofmt and vet
+        working-directory: apps/${{ matrix.service }}
+        run: |
+          set -euo pipefail
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "::error::gofmt found unformatted files:"; gofmt -l .; exit 1
+          fi
+          go vet ./...
+
+      - name: test
+        working-directory: apps/${{ matrix.service }}
+        run: |
+          set -euo pipefail
+          go test ./... -race -covermode=atomic -coverprofile=coverage.out
+          go tool cover -func=coverage.out | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GHCR requires a lowercase namespace.
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          sha="$(git rev-parse --short=7 HEAD)"
+          # Fixed-width UTC timestamp so that LEXICAL order == chronological
+          # order. Image Updater's `alphabetical` strategy sorts tags as strings
+          # and takes the last, so a monotonic counter would break at 9 -> 10
+          # while this cannot.
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "dev_tag=dev-$(date -u +%Y%m%dT%H%M%SZ)-${sha}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/${{ matrix.service }}
+          # linux/arm64 is MANDATORY -- the colima clusters are aarch64 and an
+          # amd64-only image fails with `exec format error` on every pod.
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' }}
+          tags: ghcr.io/${{ steps.meta.outputs.owner }}/${{ matrix.service }}:${{ steps.meta.outputs.dev_tag }}
+          build-args: VERSION=${{ steps.meta.outputs.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          # Keeps the OCI index to exactly the two real platforms; provenance
+          # attestations add unknown/unknown entries that confuse tag consumers.
+          provenance: false
+          sbom: false
+
+      - name: summary
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.service }}"
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| tag | \`${{ steps.meta.outputs.dev_tag }}\` |"
+            echo "| digest | \`${{ steps.push.outputs.digest }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

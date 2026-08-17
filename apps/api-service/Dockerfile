@@ -1,24 +1,40 @@
-FROM golang:1.21-alpine AS builder
+# syntax=docker/dockerfile:1.9
 
-WORKDIR /app
+# The builder runs NATIVELY on the runner's architecture and Go cross-compiles to
+# $TARGETARCH. That is why this needs no QEMU: emulated aarch64 compilation is
+# minutes per build, cross-compilation is seconds. Both dependencies here are
+# pure Go, so CGO_ENABLED=0 costs nothing.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+
+WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o api-service .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/app .
 
-# Final stage - running as root (not ideal!)
-FROM alpine:latest
+FROM alpine:3.22
 
-WORKDIR /app
+# uid 10001 matches securityContext.runAsUser in
+# gitops/apps/api-service/base/deployment.yaml. The pod sets runAsNonRoot: true,
+# so without this USER the container fails to start with CreateContainerConfigError.
+RUN apk add --no-cache ca-certificates tzdata \
+    && adduser -D -H -u 10001 app
 
-COPY --from=builder /app/api-service .
+USER 10001:10001
 
-# No health check
-# No non-root user
-# No resource limits
+COPY --from=builder /out/app /usr/local/bin/app
 
 EXPOSE 8080
 
-CMD ["./api-service"]
+# No HEALTHCHECK on purpose: under Kubernetes the kubelet probes defined on the
+# Deployment are authoritative, and a Docker HEALTHCHECK would never run.
+ENTRYPOINT ["/usr/local/bin/app"]
