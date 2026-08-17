@@ -61,6 +61,13 @@ patches:
     target:
       kind: Deployment
       name: inventory-service
+  # The PreSync gates deadlock in a preview -- see remove-presync-gates.yaml.
+  - path: remove-presync-gates.yaml
+  - path: remove-presync-gates-inventory.yaml
+  # Ordering inside one Application: database first, then the services.
+  - path: sync-waves.yaml
+  - path: sync-waves-api.yaml
+  - path: sync-waves-inventory.yaml
 
 # The wiring that makes nameSuffix survivable.
 #

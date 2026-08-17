@@ -1,0 +1,6 @@
+# See remove-presync-gates.yaml for why.
+$patch: delete
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inventory-service-wait-for-postgres
