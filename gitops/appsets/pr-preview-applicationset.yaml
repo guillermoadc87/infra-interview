@@ -48,10 +48,17 @@ spec:
           tokenRef:
             secretName: repo-infra-interview
             key: password
-        # Previews cost real memory on a laptop-sized cluster, so they are
-        # OPT-IN: label a PR `preview` to get one. Drop this to preview every PR.
-        labels:
-          - preview
+          # Previews cost real memory on a laptop-sized cluster, so they are
+          # OPT-IN: label a PR `preview` to get one. Remove this to preview
+          # every PR.
+          #
+          # NOTE this is nested under `github`, not under `pullRequest`. Putting
+          # it one level up is accepted by every YAML linter and then rejected by
+          # the API server with ".spec.generators[0].pullRequest.labels: field
+          # not declared in schema" -- label filtering is provider-specific, so
+          # it lives with the provider.
+          labels:
+            - preview
         requeueAfterSeconds: 60
 
   template:
