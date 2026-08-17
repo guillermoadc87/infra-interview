@@ -30,4 +30,4 @@ patches:
 # nothing. CI enforces this with a grep.
 images:
   - name: ghcr.io/guillermoadc87/api-service
-    newTag: dev-20260817T194146Z-15bdb10
+    newTag: dev-20260817T194635Z-47484cf
