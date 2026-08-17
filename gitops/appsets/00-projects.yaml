@@ -21,6 +21,11 @@ spec:
       namespace: platform
     - server: "*"
       namespace: vault
+    # External Secrets installs into its own namespace. Without this the
+    # Application is rejected before it ever syncs, with "application destination
+    # ... do not match any of the allowed destinations in project 'platform'".
+    - server: "*"
+      namespace: external-secrets
   clusterResourceWhitelist:
     # Required because the appsets use CreateNamespace + managedNamespaceMetadata,
     # which brings the Namespace itself under Argo CD management.
