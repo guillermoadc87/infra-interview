@@ -216,8 +216,9 @@ jobs:
       # staging is watched by Image Updater, so the retag alone is enough -- it
       # will notice the new staging- tag and write it back to git itself.
       # prod is NOT watched by anything, deliberately, so the tag has to be moved
-      # in git explicitly. That is done as a pull request: for production, the
-      # merge button is the deploy button.
+      # in git explicitly. That is done as a pull request -- and since prod is
+      # auto-synced, for production the merge button IS the deploy button,
+      # literally rather than as a figure of speech.
       - name: open the production promotion PR
         if: inputs.target_env == 'prod'
         shell: bash
@@ -266,8 +267,11 @@ jobs:
           | to | \`${DST_TAG}\` |
           | digest | \`${DIGEST}\` |
 
-          No rebuild occurred. Merging moves the prod overlay; production sync is
-          manual by design, so this PR merging does not by itself deploy."
+          No rebuild occurred.
+
+          **Merging this PR deploys to production.** The prod overlay is
+          auto-synced, so approval here is the deploy decision -- there is no
+          second confirmation step after the merge."
 
       - name: summary
         shell: bash

@@ -137,12 +137,39 @@ jobs:
               || { echo "::error file=$f::not valid YAML"; fail=1; }
           done
 
-          # The production safety boundary: prod must never receive the
-          # image-updater label or annotations.
-          if ! grep -q 'ne \$env "prod"' gitops/appsets/apps-applicationset.yaml; then
-            echo "::error::apps appset no longer excludes prod from Image Updater"
-            fail=1
-          fi
+          # THE production safety boundary, and since prod became auto-synced it
+          # is the only one. Previously manual sync was a second backstop: even
+          # if Image Updater had written a tag into the prod overlay, a human
+          # still had to press Sync. Now a write-back would deploy itself, so
+          # this check carries the whole weight.
+          #
+          # Structural, not a substring search: every image-updater reference
+          # must sit INSIDE the `ne $env "prod"` branch. Moving one after the
+          # {{- else }} would still satisfy a plain grep while handing prod to
+          # the controller.
+          python3 - <<'PY' || fail=1
+          import re, sys
+          src = open("gitops/appsets/apps-applicationset.yaml").read().splitlines()
+          start = end = None
+          for i, line in enumerate(src):
+              if re.search(r'\{\{-?\s*if ne \$env "prod"', line):
+                  start = i
+              elif start is not None and end is None and re.search(r'\{\{-?\s*else\s*-?\}\}', line):
+                  end = i
+          if start is None:
+              sys.exit("::error::apps appset no longer excludes prod from Image Updater")
+          if end is None:
+              sys.exit("::error::could not find the {{- else }} closing the prod exclusion")
+          # Comments are skipped: they render into the patch as YAML comments and
+          # govern nothing, and the else-branch explains the exclusion in prose.
+          stray = [i + 1 for i, line in enumerate(src)
+                   if "image-updater" in line
+                   and not line.lstrip().startswith("#")
+                   and not (start < i < end)]
+          if stray:
+              sys.exit(f"::error::image-updater reference outside the prod exclusion at line(s) {stray} -- prod would be governed by Image Updater AND auto-synced")
+          print(f"prod exclusion holds: image-updater confined to lines {start + 2}-{end}")
+          PY
           exit "$fail"
 
       # Parsing YAML is not enough. An ApplicationSet can be perfectly valid YAML

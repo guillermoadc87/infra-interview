@@ -362,8 +362,14 @@ run was cancelled after the plan job, so no prod tag was pushed and no PR opened
   the ladder demonstration short.
 - **GitHub Environment reviewer gates are not configured.** `promote.yml`
   references environments `staging` and `prod`, but neither has required
-  reviewers, so the prod gate is currently the PR review plus the manual sync,
-  not a GitHub approval step.
+  reviewers, so the environment gate is inert.
+- **The prod gate is the promotion PR, and it must be enforced to be a gate.**
+  Since prod became auto-synced, merging deploys — there is no second step. That
+  is only safe if `main` requires a pull request and an approving review. Branch
+  protection is assumed here, **not** demonstrated: at the time of writing `main`
+  had no protection and no rulesets (`Branch not protected`, `rulesets: []`), and
+  PRs #5, #6 and #7 were self-merged with zero approvals. Enabling auto-sync
+  without that protection would mean any push to `main` deploys to production.
 - One repo setting had to be changed by hand: **Allow GitHub Actions to create and
   approve pull requests** was off, so `gh pr create` failed *after* the retag had
   already happened. Enabled via the API.
