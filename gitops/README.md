@@ -111,8 +111,19 @@ changes during the retag.
 - **staging** is watched by Image Updater (`allow-tags: ^staging-.*`), so the
   retag alone is enough.
 - **prod is watched by nothing, deliberately.** The workflow opens a pull request
-  moving the overlay tag and carrying `settings.yaml` with it. Production sync is
-  also manual, so a merge does not by itself deploy.
+  moving the overlay tag and carrying `settings.yaml` with it. **Merging that PR
+  deploys** — prod is auto-synced, so the review *is* the deploy decision.
+
+Prod was previously manual-sync as well, requiring a merge and then a separate
+Sync. That second step gated nothing: the prod overlay can only change through
+the reviewed PR, so anyone able to trigger the sync was already able to merge.
+All it bought was a window where git and the cluster disagreed. The gate is the
+merge; the sync is mechanism.
+
+What still separates prod is narrower and sharper: **it is invisible to Image
+Updater.** Nothing but that PR can move its tag. Note the consequence — that
+exclusion used to have manual sync behind it as a second backstop, and now stands
+alone, so `gitops-validate` checks it structurally rather than by substring.
 
 ### You do not tell it which tag to promote
 
@@ -165,8 +176,9 @@ docker buildx imagetools create \
 
 To *stop* deployments rather than change them, scale Image Updater to zero, then
 revert. On **prod none of this applies** — nothing is racing you, so `git revert`
-plus a manual sync is a true rollback. That asymmetry is a large part of why prod
-is gated the way it is.
+is a true rollback and Argo CD applies it on its own. The asymmetry is caused by
+the Image Updater exclusion, not by the sync policy: prod auto-syncs exactly like
+dev and staging, but no controller is competing to write its tag back.
 
 `.github/workflows/rollback.yml` does the above for you, and like promotion it
 does not need to be told the tag: leave `good_tag` blank and it returns to the

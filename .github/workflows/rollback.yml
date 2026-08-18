@@ -16,9 +16,11 @@ name: rollback
 # Updater interval, the audit trail is forward-only, and it is the same mechanism
 # as promotion rather than a second thing to learn.
 #
-# PRODUCTION does not need this: prod has no Image Updater and syncs manually, so
-# `git revert` plus a sync is a true rollback there. That asymmetry is a large
-# part of why prod is gated the way it is.
+# PRODUCTION does not need this, and the reason is the Image Updater exclusion --
+# NOT the sync policy. Prod is auto-synced like everything else; what makes
+# `git revert` a true rollback there is that nothing is racing you to write the
+# tag back. Revert the promotion commit and Argo CD applies the revert. On dev and
+# staging the same revert would be undone by the next poll.
 on:
   workflow_dispatch:
     inputs:

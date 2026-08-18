@@ -139,15 +139,39 @@ model's nicest property. Paid for by making promotion a workflow that writes the
 same field the robot writes, so there is exactly one writer. CI fails the build if
 any file under `envs/` or `variants/` names an image.
 
-### Decision 2: Production is governed differently on purpose
-**Options**: (A) all environments identical. (B) prod manual-sync and invisible to
+### Decision 2: Production differs in exactly one way — who may move the tag
+**Options**: (A) all environments identical. (B) prod manual-sync *and* invisible
+to Image Updater. (C) prod auto-synced like everything else, but invisible to
 Image Updater.
-**Chosen**: B, via `templatePatch` gated on the env path segment. Prod receives
+
+**Chosen**: C, via `templatePatch` gated on the env path segment. Prod receives
 neither the `image-updater: enabled` label nor the annotations, so the controller
-cannot see it even if misconfigured.
-**Trade-off**: Prod gets no `selfHeal`, so drift there is *detected* but not
-corrected. Accepted because prod's git content changes only through a reviewed
-promotion PR — and because it makes rollback actually work (see Decision 3).
+cannot see it even if misconfigured. Sync policy is now identical everywhere.
+
+I started at B and moved to C, because the second gate turned out to be one gate
+counted twice. Prod's overlay can only change through a reviewed promotion PR, so
+whoever could press Sync could already merge; requiring both did not add an
+approval, it just added a step — and a window in which git and the cluster
+disagreed. The honest gate is the merge. Auto-sync makes that literal: for
+production, the merge button *is* the deploy button.
+
+**Trade-off, and it is a real one**: the Image Updater exclusion used to have
+manual sync behind it as a backstop. If the exclusion ever broke, a stray tag
+write would sit in git until a human chose to apply it. Now it would deploy
+itself. One boundary instead of two, so that boundary has to be load-bearing —
+`gitops-validate` therefore checks it *structurally*, asserting every
+`image-updater` reference sits inside the `ne $env "prod"` branch. A plain grep
+would still pass if an annotation were moved after the `{{- else }}`; the check
+is tested against exactly that mutation.
+
+Prod also gains `selfHeal`, which it previously lacked — drift is now corrected
+rather than merely reported. The cost is that break-glass `kubectl` edits are
+reverted within seconds, which is right on a normal day and can be hostile
+mid-incident. The escape hatch is to suspend automated sync on the Application.
+
+Rollback is unaffected. Decision 3's "on prod `git revert` is a true rollback"
+rests on the Image Updater exclusion, not the sync policy — nothing is racing you
+to write the tag back. Auto-sync only makes the revert apply faster.
 
 ### Decision 3: Rollback is forward, not backward
 `git revert` **does not roll back** dev or staging. The rule is "the newest allowed

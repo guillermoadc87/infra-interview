@@ -57,9 +57,21 @@ spec:
         namespace: shop
       revisionHistoryLimit: 5
       syncPolicy:
-        # `automated` is deliberately ABSENT here and added by templatePatch for
-        # non-prod only. Because a strategic-merge patch is additive, prod simply
-        # never receives it and stays manual-sync by construction.
+        # EVERY environment, prod included, converges on main automatically.
+        #
+        # Prod used to be excluded here, so a promotion needed a merge AND a
+        # manual sync. The merge is the gate -- prod's overlay changes only via a
+        # reviewed promotion PR -- so the second step gated nothing and only
+        # widened the window in which git and the cluster disagreed.
+        #
+        # What still makes prod different is the line below this block: prod
+        # never receives the Image Updater annotations, so nothing can move its
+        # tag except that PR. That exclusion is now the ONLY thing standing
+        # between prod and an automatic image roll -- manual sync used to be a
+        # second backstop and no longer is. CI asserts it structurally.
+        automated:
+          prune: true
+          selfHeal: true
         syncOptions:
           - CreateNamespace=true
           - PrunePropagationPolicy=foreground
@@ -80,7 +92,9 @@ spec:
             duration: 5s
             factor: 2
             maxDuration: 3m
-  # Per-environment policy divergence from a single template.
+  # The one remaining per-environment divergence: who is allowed to move the
+  # image tag. Sync policy is now identical everywhere (see syncPolicy above);
+  # this patch decides only whether Image Updater governs the Application.
   #
   # Backticks are Go raw string literals so the regex backslashes survive
   # templating; the rendered value is then wrapped in SINGLE YAML quotes, because
@@ -101,11 +115,9 @@ spec:
         argocd-image-updater.argoproj.io/write-back-method: 'git:repocreds'
         argocd-image-updater.argoproj.io/write-back-target: 'kustomization'
         argocd-image-updater.argoproj.io/git-branch: 'main'
-    spec:
-      syncPolicy:
-        automated:
-          prune: true
-          selfHeal: true
     {{- else }}
-    spec: {}
+    # prod: no label, no annotations. The Image Updater CR selects on
+    # `image-updater: enabled`, so it cannot see this Application even if the
+    # annotations were somehow present.
+    metadata: {}
     {{- end }}
