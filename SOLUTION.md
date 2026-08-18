@@ -20,10 +20,10 @@ repository now makes a whole class of mistake structurally impossible: there is
 no file you can copy that would move the sandbox payment endpoint into
 production.
 
-> **Want to run it?** [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) sets up
-> all four clusters locally and walks a change from pull request to production,
-> ending with the same image digest in dev, staging and prod. Roughly an hour,
-> most of it waiting on VMs.
+> **Start here:** [`OVERVIEW.md`](OVERVIEW.md) — the three-level Argo CD layout,
+> the config model, promotion, and the Vault work, in about five minutes; then a
+> section that sets all four clusters up locally and walks a change from pull
+> request to production. This document is the long form underneath it.
 
 ---
 
