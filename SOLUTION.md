@@ -20,6 +20,11 @@ repository now makes a whole class of mistake structurally impossible: there is
 no file you can copy that would move the sandbox payment endpoint into
 production.
 
+> **Want to run it?** [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) sets up
+> all four clusters locally and walks a change from pull request to production,
+> ending with the same image digest in dev, staging and prod. Roughly an hour,
+> most of it waiting on VMs.
+
 ---
 
 ## Problems with the current deployment process
