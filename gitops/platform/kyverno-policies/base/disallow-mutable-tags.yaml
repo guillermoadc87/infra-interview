@@ -1,0 +1,51 @@
+# The admission-time counterpart to CI's tag gates.
+#
+# gitops-validate.yml already asserts that every overlay pins a tag matching
+# ^<env>-<timestamp>-<sha>$. This policy enforces the same property against the
+# API server, which also sees the things CI does not: a hand-applied manifest, a
+# chart default, a pod created by an operator.
+#
+# It matters because the whole promotion design rests on a tag naming exactly
+# one artifact. `:latest` means "prod runs whatever was pushed last", which
+# makes the digest assertions in promote.yml meaningless.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-mutable-tags
+  annotations:
+    policies.kyverno.io/title: Pin images, from this repo's registry only
+    policies.kyverno.io/category: Supply Chain
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: no-latest-or-missing-tag
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [shop, "pr-*"]
+      validate:
+        message: >-
+          Images must carry an explicit, immutable tag. `:latest` or no tag at
+          all means the running version is whatever was pushed most recently,
+          which makes a promotion unable to promise anything.
+        pattern:
+          spec:
+            containers:
+              - image: "!*:latest | *:*"
+    - name: registry-must-be-ghcr-owner
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [shop]
+      validate:
+        message: >-
+          Application images must come from ghcr.io/guillermoadc87. A workload in
+          `shop` running an image from anywhere else did not come through this
+          repo's pipeline.
+        pattern:
+          spec:
+            containers:
+              - image: "ghcr.io/guillermoadc87/*"

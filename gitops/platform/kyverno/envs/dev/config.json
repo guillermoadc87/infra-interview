@@ -1,0 +1,7 @@
+{
+  "appName": "kyverno",
+  "chartRepo": "https://kyverno.github.io/kyverno",
+  "chartName": "kyverno",
+  "chartVersion": "3.9.1",
+  "namespace": "kyverno"
+}

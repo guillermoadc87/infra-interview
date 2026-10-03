@@ -1,0 +1,64 @@
+# The thing that makes a rollback AUTOMATIC.
+#
+# SOLUTION.md states the gap plainly: "A failed PostSync hook makes the sync
+# loudly red; it does not roll back." And rollback.yml explains why git revert
+# cannot help on dev or staging -- Image Updater finds the bad tag still newest
+# and writes it straight back. So every rollback to date has been human-driven.
+#
+# This template is queried at each canary step. If it fails, Argo Rollouts
+# aborts the rollout by itself and shifts traffic back to the stable ReplicaSet.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: api-service-success-rate
+spec:
+  args:
+    - name: service-name
+  metrics:
+    - name: success-rate
+      # Queried IN-CLUSTER, against the spoke's own otel-gateway.
+      #
+      # This is the central property of the collector topology: the gateway
+      # exports to the hub backend for humans AND exposes a local Prometheus
+      # endpoint for this query. So canary analysis and automatic rollback do
+      # not depend on the hub being reachable at all -- only viewing does. The
+      # verification log proves it by scaling the hub backend to zero and
+      # re-running a failed rollout.
+      provider:
+        prometheus:
+          address: http://otel-gateway.observability.svc.cluster.local:9090
+          # The metric name is the OpenTelemetry semantic convention
+          # http.server.request.duration, as the collector's Prometheus exporter
+          # renames it. pkg/obs owns the instrumentation that produces it; the
+          # two must change together.
+          #
+          # Probe traffic is already excluded at the source (pkg/obs filters
+          # /healthz and /readyz). That exclusion is load-bearing HERE: /readyz
+          # answers 503 by design while a pod connects to Postgres, so counting
+          # it would make every new pod look like an outage and abort a healthy
+          # rollout.
+          query: |
+            sum(rate(http_server_request_duration_seconds_count{
+              service_name="{{args.service-name}}",
+              http_response_status_code!~"5.."
+            }[2m]))
+            /
+            sum(rate(http_server_request_duration_seconds_count{
+              service_name="{{args.service-name}}"
+            }[2m]))
+      # 95%, not 100%: a single 500 during a 2-minute window should not abort a
+      # deploy, and this application legitimately returns 5xx when its database
+      # is unreachable for reasons unrelated to the new image.
+      successCondition: result[0] >= 0.95
+      # NO TRAFFIC MEANS NO DATA, and no data is not success.
+      #
+      # With zero requests in the window the query returns NaN and Rollouts
+      # records an Inconclusive measurement rather than a pass. On a cluster
+      # nobody is using, a canary will therefore sit at its first step instead of
+      # sailing through on an empty numerator -- which is the correct, and
+      # surprising, behaviour. Generate traffic when exercising a rollout.
+      interval: 30s
+      count: 4
+      # Tolerate one bad measurement; abort on the second. A single scrape can
+      # straddle a pod restart.
+      failureLimit: 1

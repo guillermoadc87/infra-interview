@@ -1,0 +1,148 @@
+# TIER 1 of 3 -- the node-local agent.
+#
+#   app SDK (pkg/obs)  ->  THIS (DaemonSet)  ->  otel-gateway  ->  hub backend
+#
+# Responsibility: everything that is only knowable near the node. It enriches
+# every span, metric and log with Kubernetes metadata (k8sattributes) and scrapes
+# the local kubelet for pod/container resource usage. Both of those scale with
+# the number of nodes, which is precisely why they belong in a DaemonSet rather
+# than in the gateway.
+#
+# On a single-node k3s VM this is one pod and the tier looks redundant. It is not
+# redundant, it is CORRECTLY SHAPED: the split is what makes the design still
+# right at ten nodes, and the gateway tier below genuinely cannot do this work
+# (see otel-gateway for why tail sampling cannot be done per-node).
+#
+# This is the plain opentelemetry-collector chart, NOT the OpenTelemetry
+# Operator. The operator was the first choice -- OpenTelemetryCollector and
+# Instrumentation are exactly the kind of API extension this platform layer
+# wants -- and it was rejected for two concrete reasons:
+#
+#   1. Its admission webhook needs a TLS certificate. With cert-manager disabled
+#      the chart generates one with Helm's genSignedCert, which produces a
+#      DIFFERENT certificate on every render. Argo CD renders on every
+#      reconcile, so the Secret and the webhook's caBundle would be permanently
+#      OutOfSync and no sync could ever settle them.
+#   2. Fixing that properly means cert-manager, i.e. three more pods on a node
+#      that is already the tightest constraint in this repo.
+#
+# So the operator is a deliberate deferral, not an oversight: it lands with
+# cert-manager, and the pipeline below is identical either way.
+mode: daemonset
+
+# Pin the resource names, as external-secrets does, so the Service DNS name the
+# applications and the AnalysisTemplate point at does not depend on the Helm
+# release name Argo CD happens to choose. Without it the Service is
+# otel-agent-opentelemetry-collector, and every reference to it is a mouthful
+# that silently changes if the release is renamed.
+fullnameOverride: otel-agent
+
+# Jaeger and Zipkin receivers are chart defaults. Their PORTS are turned off
+# here: nothing in this repo speaks either protocol, and an open port that no
+# pipeline reads is surface area with no purpose. The receivers remain defined
+# and simply uninstantiated, because the collector only builds what a pipeline
+# references.
+ports:
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+
+image:
+  # GHCR, not Docker Hub. The contrib distribution is required -- k8sattributes
+  # and kubeletstats are not in the core collector -- and pulling it from Docker
+  # Hub means anonymous rate limits, which show up as ImagePullBackOff that
+  # looks like a broken manifest.
+  repository: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib
+
+presets:
+  # Adds the k8sattributes processor plus the minimum ClusterRole it needs.
+  kubernetesAttributes:
+    enabled: true
+  # kubeletstats receiver: pod and container CPU/memory from the local kubelet.
+  # Needs RBAC on nodes/stats only -- no hostPath, which matters, see below.
+  kubeletMetrics:
+    enabled: true
+
+  # logsCollection and hostMetrics are deliberately OFF.
+  #
+  # Both mount host paths (/var/log/pods, /proc, /sys), and the platform
+  # Kustomize appset stamps pod-security.kubernetes.io/enforce: baseline onto
+  # every namespace it creates -- and PSS baseline FORBIDS hostPath volumes.
+  # Turning either on means carving out a privileged namespace for the one
+  # workload that needs it.
+  #
+  # Instead, application logs arrive over OTLP from pkg/obs, which is what makes
+  # that shared library load-bearing rather than decorative. The honest cost:
+  # workloads NOT instrumented with it -- postgres, Vault -- contribute no logs
+  # to the backend. Collecting those is the next step, and it is a conscious
+  # privileged-namespace decision rather than something to switch on by accident.
+  logsCollection:
+    enabled: false
+  hostMetrics:
+    enabled: false
+
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: ${env:MY_POD_IP}:4317
+        http:
+          endpoint: ${env:MY_POD_IP}:4318
+  processors:
+    # First in the pipeline on purpose: under memory pressure the collector must
+    # shed data rather than be OOMKilled, because a dead collector loses
+    # everything in flight instead of the newest batch.
+    memory_limiter:
+      check_interval: 5s
+      limit_percentage: 80
+      spike_limit_percentage: 25
+  exporters:
+    # Everything goes to the gateway. The agent makes no routing or sampling
+    # decision of its own -- those are cluster-wide concerns and live one tier up.
+    otlp:
+      endpoint: otel-gateway.observability.svc.cluster.local:4317
+      tls:
+        insecure: true
+      retry_on_failure:
+        enabled: true
+  service:
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, k8sattributes, batch]
+        exporters: [otlp]
+      metrics:
+        # `prometheus` is the chart's own scrape of the collector's :8888
+        # internal metrics. Included deliberately: a collector that is dropping
+        # data says so there, and a telemetry pipeline that cannot report its
+        # own health is the one component nothing else is watching.
+        receivers: [otlp, kubeletstats, prometheus]
+        processors: [memory_limiter, k8sattributes, batch]
+        exporters: [otlp]
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, k8sattributes, batch]
+        exporters: [otlp]
+
+# No hostPort, and therefore no $(NODE_IP) in the application's OTLP endpoint.
+#
+# The textbook DaemonSet pattern has pods send to their own node via a hostPort,
+# but PSS baseline forbids host ports just as it forbids hostPath. Applications
+# therefore address the agent through its ordinary ClusterIP Service. On a
+# single-node cluster that is the same pod either way; on a multi-node cluster it
+# costs one possible network hop, which is the price of staying inside baseline.
+service:
+  enabled: true
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 192Mi

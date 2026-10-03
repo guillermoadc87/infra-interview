@@ -1,0 +1,91 @@
+# TIER 3 of 3 -- the viewing backend. Runs on the HUB, not on a spoke.
+#
+# grafana/otel-lgtm is Grafana's all-in-one OpenTelemetry backend: Grafana,
+# Prometheus, Tempo and Loki in a single container with an OTLP endpoint already
+# wired to all three. One pod instead of four Helm releases.
+#
+# It lives on the hub for the same reason Argo CD does: it is the one thing that
+# must see every environment, and the hub is the only VM with room. Spokes have
+# 3-4 GiB and already run Postgres, Vault, External Secrets, Reloader, the
+# collectors and the applications.
+#
+# BE CLEAR ABOUT WHAT THIS IS. It is a development viewing surface, not a system
+# of record: single replica, no HA, no retention policy worth the name, and its
+# storage is a local-path PVC on one VM's disk. Production means Mimir/Loki/Tempo
+# as separate, replicated, object-store-backed deployments -- which is why the
+# spoke-side pipeline exports plain OTLP and knows nothing about what receives
+# it. Replacing this changes one endpoint in otel-gateway's values and nothing
+# else.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-lgtm
+spec:
+  replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate: a single ReadWriteOnce PVC cannot be mounted
+    # by an old and a new pod at once, so a rolling update would deadlock with
+    # the new pod stuck in ContainerCreating forever.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: otel-lgtm
+  template:
+    metadata:
+      labels:
+        app: otel-lgtm
+    spec:
+      # NO runAsNonRoot / runAsUser here, unlike every application pod in this
+      # repo.
+      #
+      # grafana/otel-lgtm:0.9.3 declares no USER and its run-all.sh starts four
+      # processes that write into /otel-lgtm and /data as root. Forcing uid 1000
+      # was tried first and the container cannot start. PSS `baseline` -- what
+      # the platform appset stamps on this namespace -- permits root; it is
+      # `restricted` that does not. That is the same reason the Postgres
+      # component is allowed to run as root, documented in the apps appset.
+      containers:
+        - name: otel-lgtm
+          image: grafana/otel-lgtm:0.9.3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: grafana
+              containerPort: 3000
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+          env:
+            # Anonymous admin access. This is a single-user local cluster behind
+            # a NodePort on a private lima network; a password here would be
+            # committed to git, which is strictly worse than no password.
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: Admin
+            - name: GF_AUTH_DISABLE_LOGIN_FORM
+              value: "true"
+          readinessProbe:
+            httpGet: {path: /api/health, port: grafana}
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            httpGet: {path: /api/health, port: grafana}
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 768Mi
+            limits:
+              # Four databases in one container. Below ~1.5Gi Prometheus and
+              # Tempo start getting OOMKilled under any real trace volume.
+              memory: 1536Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: otel-lgtm-data

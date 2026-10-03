@@ -1,0 +1,116 @@
+# Traefik as the cluster's front door, replacing the one k3s bundles.
+#
+# k3s installs its own Traefik from a HelmChart CR in kube-system. That copy is
+# invisible to git, so it contradicts the central claim in SOLUTION.md -- that a
+# cluster comes up EMPTY and everything on it arrives through Argo CD.
+# scripts/cluster-up.sh therefore passes --k3s-arg=--disable=traefik, and this
+# is the replacement.
+#
+# ORDERING, stated plainly: this chart renders a Gateway and a GatewayClass, but
+# it does NOT install the Gateway API CRDs. Those come from the gateway-api
+# component, which is Kustomize and therefore lands in sync-wave -10, AFTER this
+# one at -20. On a fresh cluster this Application's first sync fails on the two
+# unknown kinds, and the appset's retry (5 attempts, 5s doubling to 3m) succeeds
+# once the CRDs exist -- about a minute. Self-converging, and the alternative
+# (hand-writing the Gateway so it can live beside the CRDs) means hand-wiring
+# the listener port to Traefik's `web` entrypoint, which is a sharper edge than
+# a minute of red.
+providers:
+  kubernetesGateway:
+    enabled: true
+  # The Ingress and IngressRoute providers stay on: nothing in this repo uses
+  # them, but turning them off would make Traefik reject a plain Ingress with no
+  # explanation, and someone will eventually try one.
+  kubernetesCRD:
+    enabled: true
+  kubernetesIngress:
+    enabled: true
+
+gatewayClass:
+  enabled: true
+
+gateway:
+  enabled: true
+  listeners:
+    web:
+      port: 8000
+      protocol: HTTP
+      # Routes may attach from ANY namespace.
+      #
+      # Required, not convenience: a preview creates its own pr-<slug> namespace
+      # on demand, so there is no fixed list of namespaces to enumerate and no
+      # chance to label one before the HTTPRoute inside it needs to attach. The
+      # blast radius is bounded elsewhere -- the preview AppProject confines
+      # those Applications to pr-* on the dev cluster.
+      namespacePolicy:
+        from: All
+
+service:
+  # k3s's servicelb (klipper) assigns the VM's own address, which is what makes
+  # the app reachable at http://<colima-vm-ip>/ with no port-forward. Only
+  # Traefik is disabled in cluster-up.sh; servicelb stays for exactly this.
+  type: LoadBalancer
+
+# The dashboard is an unauthenticated web UI. It is left ON because this is a
+# local development cluster where it is genuinely useful, and NOT exposed
+# through the Gateway -- reaching it takes a deliberate port-forward.
+api:
+  dashboard: true
+
+ingressRoute:
+  dashboard:
+    enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 192Mi
+
+# One replica: a 2-CPU node has no room for a second, and an ingress outage on a
+# development cluster costs nothing. Production would run two with a PDB.
+deployment:
+  replicas: 1
+
+log:
+  level: INFO
+
+# Traefik's own telemetry into the same pipeline.
+#
+# Worth the four lines: this is the EDGE. With tracing on, a trace starts at the
+# Gateway and continues into the application's span (pkg/obs installs the W3C
+# propagator for exactly this), so "the request was slow" can be attributed to
+# routing versus the service versus its database rather than guessed at. Without
+# it the trace begins inside the app and the hop in front of it is invisible.
+#
+# Points at the node-local agent, same as the applications do. Only configured
+# because Traefik and the collectors are both dev-only right now; promoting
+# Traefik to another environment means promoting the collectors with it, or
+# turning this off there.
+metrics:
+  otlp:
+    enabled: true
+    grpc:
+      enabled: true
+      endpoint: otel-agent.observability.svc.cluster.local:4317
+      insecure: true
+    # Per-router and per-service labels. Bounded here -- the number of routers
+    # is the number of HTTPRoutes -- but this is exactly the knob that produces
+    # a cardinality explosion on a cluster with many routes, so it is an
+    # explicit choice rather than a default.
+    addRoutersLabels: true
+    addServicesLabels: true
+
+tracing:
+  otlp:
+    enabled: true
+    grpc:
+      enabled: true
+      endpoint: otel-agent.observability.svc.cluster.local:4317
+      insecure: true
+  # 100% at the edge, because the GATEWAY collector does tail sampling and can
+  # only decide on traces it receives. Same reasoning as pkg/obs using
+  # AlwaysSample -- head sampling anywhere upstream would discard the errors
+  # that tail sampling exists to keep.
+  sampleRate: 1.0

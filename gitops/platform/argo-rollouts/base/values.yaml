@@ -1,0 +1,37 @@
+# Argo Rollouts: the piece that turns a bad deploy into an automatic rollback.
+#
+# What the repo had before: a failed PostSync hook makes the sync loudly red. It
+# does NOT undo anything, and `git revert` cannot help on dev or staging because
+# Image Updater finds the bad tag still newest and writes it straight back
+# (see .github/workflows/rollback.yml). So "rollback" meant republishing a
+# known-good digest under a newer tag -- correct, but entirely human-driven.
+#
+# A Rollout with an AnalysisTemplate aborts BY ITSELF when the canary's error
+# rate or latency regresses, before the change has reached most of the traffic.
+#
+# INSTALLED IN EVERY ENVIRONMENT, unlike the rest of the new platform layer.
+# Not for the controller -- for the CRD. gitops/apps/*/base/ declares a Rollout,
+# so every environment that renders that base needs the Rollout CRD to exist or
+# the Application fails to sync. The controller is one small pod; the CRD is the
+# actual requirement.
+fullnameOverride: argo-rollouts
+
+# The CRDs ship with the chart. ServerSideApply is set globally on the platform
+# appset, which is what keeps the large Rollout CRD under the client-side
+# annotation limit -- the same reason external-secrets needs it.
+installCRDs: true
+
+controller:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+
+# The dashboard is a separate deployment and is off: it is a read-only UI, and
+# `kubectl argo rollouts get rollout <name> --watch` shows the same progression
+# in a terminal for no memory.
+dashboard:
+  enabled: false

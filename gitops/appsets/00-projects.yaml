@@ -28,6 +28,19 @@ spec:
       namespace: external-secrets
     - server: "*"
       namespace: reloader
+    # Added with the platform layer below. Each one is listed EXPLICITLY on
+    # purpose: an Application whose namespace is missing here is rejected before
+    # it ever syncs, with "application destination ... do not match any of the
+    # allowed destinations in project 'platform'". That is the first thing to
+    # check when a new component appears to do nothing.
+    - server: "*"
+      namespace: traefik
+    - server: "*"
+      namespace: kyverno
+    - server: "*"
+      namespace: argo-rollouts
+    - server: "*"
+      namespace: observability
   clusterResourceWhitelist:
     # Required because the appsets use CreateNamespace + managedNamespaceMetadata,
     # which brings the Namespace itself under Argo CD management.
@@ -51,6 +64,21 @@ spec:
     # could not be served by a namespaced SecretStore.
     - group: external-secrets.io
       kind: ClusterSecretStore
+    # --- added with the platform layer -----------------------------------
+    # Kyverno reconciles its own webhook configurations at runtime, so Argo CD
+    # does not manage those; this is for the chart's static ones and for the
+    # OpenTelemetry pieces that may follow.
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+    # The Traefik chart renders a GatewayClass (cluster-scoped) when the
+    # kubernetesGateway provider is enabled, and an IngressClass always.
+    - group: gateway.networking.k8s.io
+      kind: GatewayClass
+    - group: networking.k8s.io
+      kind: IngressClass
+    # The policies in gitops/platform/kyverno-policies.
+    - group: kyverno.io
+      kind: ClusterPolicy
   namespaceResourceWhitelist:
     - group: "*"
       kind: "*"

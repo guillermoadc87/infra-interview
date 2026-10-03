@@ -13,9 +13,32 @@ reloader:
   autoReloadAll: false
 
   # `default` = patch a pod-template annotation to trigger a normal rolling
-  # update, so the Deployment's own surge/maxUnavailable settings still apply and
+  # update, so the workload's own surge/maxUnavailable settings still apply and
   # a rotation cannot take all replicas down at once.
   reloadStrategy: default
+
+  # isArgoRollouts is deliberately LEFT OFF, even though the applications are
+  # now fronted by an Argo Rollout.
+  #
+  # The obvious reading is that it must be switched on or credential rotation
+  # stops working -- Reloader would keep patching a Deployment that no longer
+  # runs any pods. That reading assumes the Rollout owns the pod template. It
+  # does not: gitops/apps/*/base/rollout.yaml uses workloadRef, so the template
+  # still lives on the Deployment and the Rollout only carries strategy.
+  #
+  # So the existing chain is intact, with one extra link:
+  #   Vault mints a new role -> ESO updates the Secret -> Reloader patches the
+  #   DEPLOYMENT's pod template -> Argo Rollouts sees its referenced workload
+  #   change -> it rolls the pods.
+  #
+  # Turning the flag on would make Reloader look for Rollouts carrying the
+  # reload annotation. Ours do not (the annotation stays on the Deployment,
+  # where the template is), so it would find nothing and change nothing -- an
+  # option that reads as load-bearing and is not.
+  #
+  # This is the one link in the rotation chain that static validation cannot
+  # prove. docs/assessment.md lists it as an explicit cluster check: force an
+  # ESO refresh and confirm the Rollout actually rolls.
 
   deployment:
     resources:

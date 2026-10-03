@@ -19,6 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Needed by the pkg/obs gate below. Pinned from the module itself rather
+      # than relying on whatever Go the runner image ships, which would silently
+      # fall back to downloading a toolchain on every run.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pkg/obs/go.mod
+          cache-dependency-path: pkg/obs/go.sum
+
       - name: install kustomize + kubeconform
         run: |
           set -euo pipefail
@@ -50,11 +58,64 @@ jobs:
               echo "::error file=$d/kustomization.yaml::kustomize build failed"
               echo "$out"; fail=1; echo "::endgroup::"; continue
             fi
+            # -ignore-missing-schemas is GONE, replaced by real CRD schemas.
+            #
+            # It made this gate much weaker than it looked: kubeconform has no
+            # built-in schema for ANY custom resource, so every ExternalSecret,
+            # ClusterSecretStore and VaultDynamicSecret was silently skipped --
+            # and the new HTTPRoute, Rollout, AnalysisTemplate and ClusterPolicy
+            # would have been too. A typo in a Rollout strategy would have
+            # sailed through and failed on the cluster instead.
+            #
+            # The CRDs-catalog supplies those schemas. Verified: 150 resources
+            # across all 29 overlays now validate with ZERO skipped.
+            #
+            # CustomResourceDefinition itself is skipped EXPLICITLY rather than
+            # by omission: kubeconform ships no schema for it at any Kubernetes
+            # version (CRD schemas are self-referential). The only CRDs rendered
+            # here come from gitops/platform/gateway-api, which is a pinned
+            # upstream release artifact. Naming the skip keeps it visible, which
+            # is the whole objection to -ignore-missing-schemas.
             printf '%s\n' "$out" | kubeconform -strict -summary \
-              -ignore-missing-schemas -kubernetes-version 1.31.0 || fail=1
+              -kubernetes-version 1.31.0 \
+              -skip CustomResourceDefinition \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+              || fail=1
             echo "::endgroup::"
           done
           exit "$fail"
+
+      - name: observability goes through pkg/obs, not around it
+        shell: bash
+        run: |
+          set -uo pipefail
+          # The STRUCTURAL half of the observability standard.
+          #
+          # pkg/obs exists so that resource attributes, metric names and
+          # sampling are decided in exactly one place. That only holds if it is
+          # the only door: a service that reaches for go.opentelemetry.io
+          # directly gets its own tracer with its own resource attributes, and
+          # the first symptom is a dashboard that silently covers one service
+          # instead of two. Nothing about that failure points at its cause.
+          #
+          # Same enforcement style as the Image Updater gate below: a property
+          # the repo depends on is asserted mechanically rather than trusted to
+          # a code review. The Kyverno policy require-telemetry-contract covers
+          # the third case -- a pod that never points at a collector at all.
+          offenders="$(grep -rn --include='*.go' \
+                        -E '"go\.opentelemetry\.io/|"github\.com/XSAM/otelsql"' apps/ || true)"
+          if [ -n "$offenders" ]; then
+            echo "::error::application code must import infra-interview/pkg/obs, not an OpenTelemetry package directly"
+            printf '%s\n' "$offenders"
+            exit 1
+          fi
+          echo "no direct OpenTelemetry imports under apps/" >> "$GITHUB_STEP_SUMMARY"
+
+          # And the library must stay independently testable -- it is the one
+          # place the standard is defined, so a break there is a break
+          # everywhere.
+          ( cd pkg/obs && go build ./... && go vet ./... && go test ./... )
 
       - name: the image tag has exactly one owner
         shell: bash

@@ -16,3 +16,18 @@ spec:
           env:
             - name: ENVIRONMENT
               value: dev
+            # CATEGORY 3, and the clearest example of why the category exists.
+            #
+            # This is an environment's own infrastructure address. It must never
+            # travel with a promotion -- shipping dev's collector endpoint to
+            # prod would point production telemetry at the wrong cluster -- so it
+            # lives here, physically outside envs/, where promotion cannot reach
+            # it.
+            #
+            # Its ABSENCE is also the feature flag. Only dev runs collectors, and
+            # pkg/obs treats an unset endpoint as "telemetry disabled" rather
+            # than an error, so staging and prod keep working with no telemetry
+            # and no connection-refused noise. Promoting the collectors to
+            # another environment means adding this one line to that variant.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-agent.observability.svc.cluster.local:4317

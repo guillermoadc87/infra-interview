@@ -50,6 +50,29 @@ spec:
             # --- identical in every environment => belongs in base ---
             - name: PORT
               value: "8081"
+            # Pod identity for telemetry, from the downward API.
+            #
+            # pkg/obs turns these into the k8s.* resource attributes and
+            # service.instance.id, which is what makes "which replica served
+            # this request" answerable. The agent's k8sattributes processor also
+            # enriches by source IP; carrying them here means a pod still
+            # identifies itself when that association fails.
+            #
+            # In base because they are identical in every environment. The
+            # collector ENDPOINT is not -- it lives in variants/env/<env>/,
+            # config category 3, and is absent where no collector runs.
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: K8S_NAMESPACE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             - name: DB_HOST
               value: postgres.platform.svc.cluster.local
             - name: DB_NAME

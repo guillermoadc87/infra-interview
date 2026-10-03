@@ -81,6 +81,44 @@ kubectl --context "$HUB_CTX" -n argocd apply -f gitops/bootstrap/hub/imageupdate
 # The Deployment is argocd-image-updater-CONTROLLER under the v1.x layout.
 kubectl --context "$HUB_CTX" -n argocd rollout status deploy/argocd-image-updater-controller --timeout=180s
 
+# ------------------------------------------------- the hub as a target ------
+# Register the hub WITH ITSELF, labelled env=hub.
+#
+# The platform ApplicationSets select clusters by an `env` label -- that label is
+# the entire contract for "what gets installed where". The hub has always been
+# the control plane only, so it carried no label and could not be targeted.
+#
+# The observability backend (gitops/platform/otel-lgtm) has to run SOMEWHERE
+# central: it is the one component that must see all three environments, and the
+# spokes have 3-4 GiB and already run Postgres, Vault, External Secrets,
+# Reloader, the collectors and the applications. The hub is the only VM with
+# room.
+#
+# So rather than inventing a second mechanism for "deploy to the hub", the hub
+# simply becomes a cluster with a label, like every spoke. One new env value,
+# and `gitops/platform/otel-lgtm/envs/hub/` is picked up by the SAME appset that
+# serves the spokes -- no appset change at all.
+#
+# `server: https://kubernetes.default.svc` is Argo CD's in-cluster entry, so
+# there is no token to mint and no RBAC to grant: Argo CD already has full
+# access to the cluster it runs on.
+info "registering the hub as a deploy target (env=hub)"
+kubectl --context "$HUB_CTX" -n argocd apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cluster-hub
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+    env: hub
+stringData:
+  name: hub
+  server: https://kubernetes.default.svc
+  config: |
+    {"tlsClientConfig":{"insecure":false}}
+EOF
+
 # ------------------------------------------------------------- root app -----
 info "planting the root Application (App-of-Apps)"
 sed "s|__REPO_URL__|${REPO_URL}|g" gitops/root/root-application.yaml \

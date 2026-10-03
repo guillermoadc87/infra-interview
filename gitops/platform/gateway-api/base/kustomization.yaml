@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The Gateway API CRDs, pinned to a release.
+#
+# These are NOT bundled by the Traefik chart -- it renders a Gateway and a
+# GatewayClass and assumes the kinds already exist. Nothing else in the cluster
+# provides them either: k3s ships Traefik but not the Gateway API.
+#
+# A remote URL rather than a vendored copy. The standard channel is ~2 MB of
+# generated YAML; committing it would bury every future diff, and the version is
+# already pinned right here, which is the property that actually matters.
+# Argo CD's repo-server and CI both already reach github.com, so this adds no
+# new network dependency.
+#
+# INSTALLED IN EVERY ENVIRONMENT, while Traefik itself is dev-only. CRDs cost
+# zero pods, and gitops/apps/*/base/ declares an HTTPRoute -- so staging and
+# prod need the kinds to exist for those overlays to render and apply at all.
+# The routes sit there inert until a controller is promoted to watch them, which
+# then needs no application change.
+resources:
+  - https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml

@@ -1,0 +1,7 @@
+{
+  "appName": "argo-rollouts",
+  "chartRepo": "https://argoproj.github.io/argo-helm",
+  "chartName": "argo-rollouts",
+  "chartVersion": "2.43.5",
+  "namespace": "argo-rollouts"
+}

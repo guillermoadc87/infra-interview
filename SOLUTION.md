@@ -381,24 +381,26 @@ claimed it applied to both.
 
 ## Production Considerations
 
-- **Secrets.** `postgres-credentials` is created out of band per cluster, and that
-  is the one thing not in git. A real deployment needs External Secrets, Sealed
-  Secrets, or SOPS — the Vault already in the platform layer is the obvious
-  backend. Not implemented; the gap is explicit in
-  `gitops/bootstrap/spoke/postgres-credentials.example.yaml`.
-- **Vault here is a toy.** Dev mode is in-memory and auto-unsealed, so every pod
-  restart destroys all secrets. It can never be a source of truth as configured.
-  `prod` inherits dev mode from `base/values.yaml`; real production means
-  `ha.enabled` + raft + auto-unseal.
+- **Secrets — SUPERSEDED.** What stood here was true when written and is not
+  now. It described `postgres-credentials` as an out-of-band Secret
+  and Vault as "a toy… dev mode is in-memory". Both were fixed by the Vault/ESO
+  work in `OVERVIEW.md` §4, and this section was simply not updated with it.
+  What stands today: Vault runs standalone on **file storage** with a
+  self-initialising unseal CronJob, the `ClusterSecretStore` carries no
+  credential, and each application authenticates as itself for a dynamic
+  per-app Postgres role on a 1h TTL. What remains true: the unseal key lives in
+  a Kubernetes Secret and Vault is per-cluster, so real production still means
+  raft plus KMS auto-unseal.
 - **Argo CD's own credentials.** The Image Updater PAT has repo write access. It
   should be a deploy key or GitHub App scoped to one repository, rotated, and
   separate from the registry credential — two credentials, two blast radii.
 - **`argocd-manager` gets cluster-admin** on each spoke, which is what
   `argocd cluster add` does by default. A real fleet scopes this per project.
-- **No progressive delivery.** A failed PostSync hook makes the sync loudly red;
-  it does not roll back. Automatic rollback needs Argo Rollouts with an analysis
-  template. `maxUnavailable: 0` plus a readiness probe already means a bad image
-  never takes traffic, which is the property that matters most.
+- ~~**No progressive delivery.**~~ ADDRESSED. Argo Rollouts now runs a canary
+  with a Prometheus-backed `AnalysisTemplate` on dev and staging, and aborts by
+  itself. The analysis queries the spoke's OWN collector, so a rollback decision
+  does not depend on the central backend being reachable. Prod still has no
+  canary and cannot have one at one replica on 2 CPU.
 - **Access patterns at scale** (the path's bonus question): the asymmetry here is
   the point. Dev optimises for speed (auto-update, auto-sync); prod optimises for
   auditability (no automated writer, PR-gated tag change, human-approved sync,
@@ -413,9 +415,11 @@ claimed it applied to both.
 
 1. **Bring up staging and prod** to show one label selecting across three clusters
    and to exercise the promotion ladder end to end.
-3. **Secrets via External Secrets + Vault**, removing the one out-of-band step and
-   making cluster registration genuinely the only manual action.
-4. **Argo Rollouts** for canary analysis and true automatic rollback.
+3. ~~**Secrets via External Secrets + Vault**~~ — DONE. See `OVERVIEW.md` §4.
+4. ~~**Argo Rollouts** for canary analysis and true automatic rollback.~~ — DONE
+   on dev and staging, via `workloadRef` so the config taxonomy survives.
+   Prod deliberately runs a steps-free strategy: one replica on a 2-CPU node
+   cannot host a canary. See `docs/assessment.md` §3.
 5. **Migrate Image Updater off annotations.** v1 is CRD-driven; `useAnnotations`
    is the documented ApplicationSet-friendly path but is formally legacy.
 6. **Resolve the duplicate database ownership** — delete the `postgresql_database`

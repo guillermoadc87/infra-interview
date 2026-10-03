@@ -1,0 +1,48 @@
+# The first way into this application that is not kubectl port-forward.
+#
+# Before this, OVERVIEW.md verified a deployment with
+#   kubectl exec <a pod> -- wget -qO- localhost:8080/...
+# and a PR preview built a complete isolated stack that nobody could open in a
+# browser.
+#
+# PATH-BASED, not hostname-based, on purpose. colima assigns the VM address at
+# start-up, so any hostname scheme would need either a wildcard DNS service or
+# an /etc/hosts edit per developer per environment. A path prefix needs neither:
+#
+#   curl http://$(kubectl -n traefik get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/api/orders/summary
+#
+# IN base/, SO EVERY ENVIRONMENT GETS ONE -- even the ones with no Gateway
+# controller yet. Traefik is dev-only for now; the gateway-api CRDs are
+# installed everywhere precisely so these routes render and apply on staging and
+# prod too, where they sit inert until a controller is promoted to watch them.
+# Promoting Traefik then requires no change here.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api-service
+spec:
+  parentRefs:
+    - name: traefik-gateway
+      namespace: traefik
+      # Explicit, because a parentRef in another namespace is only valid if that
+      # Gateway's listener allows it. Traefik's listener is configured with
+      # namespacePolicy.from: All for exactly this reason -- preview namespaces
+      # are created on demand and cannot be enumerated in advance.
+      sectionName: web
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+      filters:
+        # Strip the prefix before forwarding. Without this the service receives
+        # /api/orders/summary, which matches no route in the Go mux and 404s --
+        # a failure that looks like the Gateway is broken when it is working.
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: api-service
+          port: 8080

@@ -1,0 +1,35 @@
+# NodePort, with FIXED ports, because the spokes address this from outside the
+# cluster.
+#
+# A spoke's otel-gateway exports to lima-colima-hub.internal:30317, which is a
+# literal in its values file -- so these numbers are an interface, not an
+# implementation detail. An auto-allocated nodePort would change on recreation
+# and silently break every spoke.
+#
+# Reachability was verified rather than assumed: see
+# docs/spike-02-spoke-to-hub.md. spike-01 only ever established hub -> spoke.
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-lgtm
+spec:
+  type: NodePort
+  selector:
+    app: otel-lgtm
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+      nodePort: 30317
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+      nodePort: 30318
+    - name: grafana
+      port: 3000
+      targetPort: grafana
+      # Grafana is reached from the DEVELOPER's machine, not from a spoke:
+      #   open http://<hub-vm-ip>:30300
+      # The hub has no Gateway of its own -- adding Traefik there would spend
+      # memory on the one VM already running Argo CD, for a single UI.
+      nodePort: 30300

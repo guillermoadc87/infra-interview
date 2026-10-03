@@ -1,0 +1,13 @@
+# An AnalysisTemplate with no Rollout to reference it is dead weight.
+#
+# Deleted for the same reason the Rollout above is: previews are created one per
+# open pull request, and the pr-preview appset's own comment warns that they
+# "accumulate silently until a node runs out of memory". Two inert custom
+# resources per preview is not what fills a node, but an object that looks
+# meaningful and governs nothing is exactly what this repo deletes rather than
+# leaves lying around -- see the `images:` comment in envs/dev/kustomization.yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: placeholder # replaced by the patch target selector
+$patch: delete

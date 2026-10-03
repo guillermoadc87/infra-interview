@@ -1,0 +1,7 @@
+{
+  "appName": "traefik",
+  "chartRepo": "https://traefik.github.io/charts",
+  "chartName": "traefik",
+  "chartVersion": "41.6.1",
+  "namespace": "traefik"
+}

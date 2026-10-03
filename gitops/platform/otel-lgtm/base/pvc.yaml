@@ -1,0 +1,13 @@
+# k3s's local-path provisioner is the only StorageClass here, so storageClassName
+# is deliberately unset and the cluster default applies -- the same choice the
+# Vault component makes.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: otel-lgtm-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

@@ -13,6 +13,9 @@ components:
 
 patches:
   - path: replicas.yaml
+  # Opts this environment into a canary with automated abort. Absent from prod,
+  # which cannot host one -- see base/rollout.yaml.
+  - path: rollout-strategy.yaml
   - path: settings.yaml
 
 # CATEGORY 1 — see envs/dev/kustomization.yaml for why this is the sole owner.
