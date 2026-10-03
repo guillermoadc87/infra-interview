@@ -1,0 +1,77 @@
+# cert-manager, added for one concrete reason: the OpenTelemetry Operator's
+# admission webhook needs a TLS certificate.
+#
+# WHY THIS IS NOT OPTIONAL FOR THAT OPERATOR. The chart offers three ways to get
+# the cert. Option 2, Helm's own genSignedCert, regenerates it on EVERY render --
+# and Argo CD renders on every reconcile, so the Secret and the webhook's
+# caBundle would be permanently OutOfSync with no sync able to settle them.
+# Option 3 means committing a certificate and key to a public repository.
+# Option 1, cert-manager, is the only one that works under GitOps, and it is the
+# chart's own default.
+#
+# The collectors ran as two plain Helm releases before this, specifically to
+# avoid pulling cert-manager in. That worked, but it meant the collector
+# topology was Helm values rather than real API objects -- no
+# OpenTelemetryCollector to inspect, no Instrumentation available at all.
+#
+# Beyond the operator, this is also the prerequisite for a TLS listener on the
+# Traefik Gateway, which is currently HTTP-only. That is NOT configured here --
+# adding it is a separate decision about certificate trust on developer
+# machines, and the gap is recorded in docs/assessment.md rather than
+# half-solved.
+
+# The chart installs its own CRDs. ServerSideApply is set globally on the
+# platform appset, which is what keeps the large Certificate CRD under the
+# client-side annotation limit -- the same reason external-secrets needs it.
+crds:
+  enabled: true
+  # Keep the CRDs if the release is ever removed. Deleting a cert-manager CRD
+  # cascades into deleting every Certificate and Issuer in the cluster, which
+  # would take the OTel operator's webhook down with it.
+  keep: true
+
+# Three components, one replica each. This is a single-node development cluster
+# and cert-manager is not in the request path for anything except issuing, so
+# there is nothing to be gained from a second copy of any of them.
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 192Mi
+
+webhook:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+cainjector:
+  # REQUIRED, not optional, despite being the component most often switched off
+  # to save memory.
+  #
+  # cainjector is what writes the CA bundle into a webhook's caBundle field. The
+  # OpenTelemetry Operator's ValidatingWebhookConfiguration carries
+  # cert-manager.io/inject-ca-from, so without this the webhook exists with an
+  # empty caBundle and every OpenTelemetryCollector apply fails TLS verification
+  # -- which surfaces as "x509: certificate signed by unknown authority" on a
+  # sync, not as anything pointing at cainjector.
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+
+# No Prometheus Operator in this platform -- metrics go through OpenTelemetry
+# (gitops/platform/otel-collectors). A ServiceMonitor here would simply fail to
+# apply for want of the CRD.
+prometheus:
+  enabled: false

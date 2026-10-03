@@ -29,5 +29,12 @@ spec:
             # than an error, so staging and prod keep working with no telemetry
             # and no connection-refused noise. Promoting the collectors to
             # another environment means adding this one line to that variant.
+            # "-collector" is appended by the OpenTelemetry Operator: it names
+            # a collector's Service after the custom resource plus that suffix.
+            # The collectors used to be plain Helm releases whose Service was
+            # just `otel-agent`, so this value changed when they became custom
+            # resources -- and a stale name here is silent, because pkg/obs
+            # treats an unreachable collector as something to retry rather than
+            # an error.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: http://otel-agent.observability.svc.cluster.local:4317
+              value: http://otel-agent-collector.observability.svc.cluster.local:4317

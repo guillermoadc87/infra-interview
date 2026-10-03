@@ -1,7 +1,0 @@
-{
-  "appName": "otel-gateway",
-  "chartRepo": "https://open-telemetry.github.io/opentelemetry-helm-charts",
-  "chartName": "opentelemetry-collector",
-  "chartVersion": "0.175.0",
-  "namespace": "observability"
-}

@@ -93,7 +93,7 @@ metrics:
     enabled: true
     grpc:
       enabled: true
-      endpoint: otel-agent.observability.svc.cluster.local:4317
+      endpoint: otel-agent-collector.observability.svc.cluster.local:4317
       insecure: true
     # Per-router and per-service labels. Bounded here -- the number of routers
     # is the number of HTTPRoutes -- but this is exactly the knob that produces
@@ -107,7 +107,7 @@ tracing:
     enabled: true
     grpc:
       enabled: true
-      endpoint: otel-agent.observability.svc.cluster.local:4317
+      endpoint: otel-agent-collector.observability.svc.cluster.local:4317
       insecure: true
   # 100% at the edge, because the GATEWAY collector does tail sampling and can
   # only decide on traces it receives. Same reasoning as pkg/obs using

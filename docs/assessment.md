@@ -82,7 +82,7 @@ Six constraints bite, all of them discovered the hard way:
 
 ## 3. What was added
 
-Nine components, all through the existing mechanism.
+Eleven components, all through the existing mechanism.
 
 ### A front door — `traefik` + `gateway-api`
 
@@ -157,13 +157,27 @@ that needs more nodes, not more config.
 ```
 app process ── pkg/obs SDK, OTLP
      ▼
-tier 1  otel-agent    DaemonSet   k8sattributes, kubeletstats
+tier 1  otel-agent    DaemonSet   k8s_attributes, kubelet_stats
      ▼
 tier 2  otel-gateway  Deployment  tail_sampling, k8s_cluster, redaction
      ├── :9090 Prometheus  ◀── Argo Rollouts queries HERE
      ▼ OTLP
 tier 3  otel-lgtm     on the hub  Grafana + Prometheus + Tempo + Loki
 ```
+
+Tiers 1 and 2 are **`OpenTelemetryCollector` custom resources**, run by the
+OpenTelemetry Operator — which is what `cert-manager` was added to unblock. Two
+consequences worth having: the topology is now an API object `kubectl get` can
+show rather than Helm values, and because v1beta1 types `spec.config` as a
+structured object, CI validates the collector pipelines themselves. A malformed
+pipeline now fails in a pull request instead of in a CrashLoopBackOff.
+
+The operator's default collector image is the `-k8s` distribution, and this
+pins **contrib** instead. Not a preference — the k8s distro has **no
+`prometheus` exporter**, checked with `otelcol-k8s components`, and that
+exporter is the whole reason rollback does not depend on the hub. The k8s image
+would have removed that property silently: the collector fails on an unknown
+exporter only at start-up, after the Rollout has already been told to analyse.
 
 The tiers are not decoration. Tail sampling **cannot** be done per-node: a
 decision needs every span of a trace in one place, and spans of one trace can be
@@ -256,16 +270,14 @@ Ranked, with the reason each is not here rather than a vague "future work".
 
 **Deferred because of the resource budget** (4 VMs, 2 CPU, 3–4 GiB each):
 
-- **cert-manager** (`Certificate`, `ClusterIssuer`) — wanted, and the reason the
-  OpenTelemetry *Operator* is not here. The operator's admission webhook needs a
-  TLS certificate; with cert-manager disabled the chart generates one with
-  Helm's `genSignedCert`, which produces a different certificate on every
-  render. Argo CD renders on every reconcile, so the Secret and the webhook's
-  `caBundle` would be permanently OutOfSync with no sync able to settle them.
-  Fixing it properly means cert-manager, i.e. three more pods. The plain
-  collector chart delivers the same pipeline, so the operator is a deliberate
-  deferral — it lands with cert-manager, and `OpenTelemetryCollector` /
-  `Instrumentation` come with it.
+- ~~**cert-manager**~~ — ADDED, together with the OpenTelemetry Operator it was
+  blocking. A self-signed root issues a cluster CA, and the operator's webhook
+  certificate chains off it, so there is one trust root rather than one per
+  consumer. What this does NOT yet do is give the Traefik Gateway a TLS
+  listener: it is still HTTP-only. That is now a configuration decision rather
+  than a missing dependency, and it needs an answer for how developer machines
+  trust the CA (`trust-manager` distributes the bundle in-cluster; a browser
+  still will not trust it). Recorded here rather than half-solved.
 - **A service mesh** (Linkerd, or Istio ambient) for mTLS and free L7 metrics.
   Does not fit 2 CPU. This is the honest answer to east-west encryption, which
   the generated NetworkPolicies only approximate.

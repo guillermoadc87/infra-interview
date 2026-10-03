@@ -155,7 +155,7 @@ outside, nothing watching it, and nothing enforcing anything at admission.
 [`docs/assessment.md`](docs/assessment.md) scores that honestly (≈6.5/10 as a
 deployment, ≈9/10 as a delivery system) and lists what is still missing.
 
-Nine new components, all through the existing mechanism — **no ApplicationSet
+Eleven new components, all through the existing mechanism — **no ApplicationSet
 changed**, because `gitops/platform/<name>/envs/<env>/config.json` is the whole
 interface:
 
@@ -165,8 +165,14 @@ interface:
 | `traefik` | serves them | dev |
 | `kyverno` + `kyverno-policies` | `ClusterPolicy`, `PolicyReport` | dev |
 | `argo-rollouts` | `Rollout`, `AnalysisTemplate` | all spokes |
-| `otel-agent`, `otel-gateway` | the collector pipeline | dev |
+| `cert-manager` + `cert-manager-issuers` | `Certificate`, `ClusterIssuer` | dev |
+| `opentelemetry-operator` | `OpenTelemetryCollector`, `Instrumentation` | dev |
+| `otel-collectors` | the two collector tiers, as CRs | dev |
 | `otel-lgtm` | Grafana + Prometheus + Tempo + Loki | **hub** |
+
+cert-manager is there for one concrete reason: the operator's admission webhook
+needs a certificate, and the only alternative regenerates it on every render —
+which under Argo CD means permanent, unsettleable drift.
 
 Four things worth knowing:
 

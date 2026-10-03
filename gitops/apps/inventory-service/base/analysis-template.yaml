@@ -26,7 +26,7 @@ spec:
       # re-running a failed rollout.
       provider:
         prometheus:
-          address: http://otel-gateway.observability.svc.cluster.local:9090
+          address: http://otel-gateway-collector.observability.svc.cluster.local:9090
           # The metric name is the OpenTelemetry semantic convention
           # http.server.request.duration, as the collector's Prometheus exporter
           # renames it. pkg/obs owns the instrumentation that produces it; the

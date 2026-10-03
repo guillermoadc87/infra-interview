@@ -1,0 +1,169 @@
+# TIER 2 of 3 -- the per-cluster gateway, as an OpenTelemetryCollector.
+#
+#   app SDK  ->  otel-agent (DaemonSet)  ->  THIS  ->  hub backend
+#                                              |
+#                                              +-> :9090 Prometheus, queried by
+#                                                  Argo Rollouts' analysis
+#
+# Responsibility: everything that must see the WHOLE CLUSTER at once, which is
+# exactly what the agent tier cannot do:
+#
+#   - tail_sampling. A sampling decision needs every span of a trace in one
+#     place. Spans of one trace can be produced on different nodes, so a
+#     per-node decision would keep half a trace and drop the other half. This
+#     is the structural reason this tier exists.
+#   - k8s_cluster metrics. Cluster-level counts come from the API server, so
+#     collecting them per node would multiply them by the node count. Safe here
+#     precisely because there is one replica.
+#   - one egress point. Redaction and the backend address are configured once,
+#     instead of on every node.
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-gateway
+spec:
+  mode: deployment
+  replicas: 1
+  serviceAccount: otel-gateway
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      # Higher than the agent's: tail_sampling holds up to num_traces in memory
+      # for decision_wait before deciding.
+      memory: 384Mi
+  # The operator derives Service ports from the config below, but only for
+  # receivers. The prometheus EXPORTER's endpoint is not a receiver, so the port
+  # has to be declared or :9090 never reaches the Service -- and the
+  # AnalysisTemplate would fail to connect while the collector itself looked
+  # perfectly healthy.
+  ports:
+    - name: prometheus
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "${env:MY_POD_IP}:4317"
+          http:
+            endpoint: "${env:MY_POD_IP}:4318"
+      k8s_cluster:
+        auth_type: serviceAccount
+        collection_interval: 30s
+      # The collector's own :8888 internal metrics -- including tail_sampling's
+      # drop counters, which is how you find out the sampler is discarding more
+      # than you think. A telemetry pipeline that cannot report its own health
+      # is the one component nothing else is watching.
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: otel-gateway-self
+              scrape_interval: 30s
+              static_configs:
+                - targets: ["${env:MY_POD_IP}:8888"]
+
+    processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+
+      # Keep everything that matters, sample the rest.
+      #
+      # pkg/obs samples NOTHING away (AlwaysSample) so that this policy set is
+      # the only sampling decision in the system. Head sampling in the process
+      # would discard errors before they ever reached these rules.
+      tail_sampling:
+        # How long to hold a trace open waiting for the rest of its spans. Too
+        # short and a slow trace is judged on its first span only.
+        decision_wait: 5s
+        num_traces: 20000
+        policies:
+          - name: keep-all-errors
+            type: status_code
+            status_code:
+              status_codes: [ERROR]
+          - name: keep-slow-traces
+            type: latency
+            latency:
+              threshold_ms: 500
+          - name: baseline-sample
+            type: probabilistic
+            probabilistic:
+              sampling_percentage: 10
+
+      # Strips anything that should not leave the cluster. Nothing here produces
+      # an Authorization header today; the stage exists so that the place to add
+      # a redaction rule is obvious and central, rather than discovered during
+      # an incident.
+      transform/redact:
+        error_mode: ignore
+        trace_statements:
+          - context: span
+            statements:
+              - delete_key(attributes, "http.request.header.authorization")
+              - delete_key(attributes, "http.request.header.cookie")
+
+      batch: {}
+
+    exporters:
+      # TIER 3: the viewing backend on the hub, over the lima user-v2 network at
+      # a fixed NodePort.
+      #
+      # Verified in docs/spike-02-spoke-to-hub.md: a POD on a spoke resolves
+      # lima-colima-hub.internal via CoreDNS's upstream and reaches the hub's
+      # NodePort range. spike-01 only ever established hub -> spoke, so this was
+      # an open question rather than an assumption.
+      otlp_grpc/hub:
+        endpoint: lima-colima-hub.internal:30317
+        tls:
+          insecure: true
+        retry_on_failure:
+          enabled: true
+        # Bounded, deliberately. If the hub is unreachable the queue fills and
+        # telemetry is dropped -- it must never grow until the collector is
+        # OOMKilled, because that would take the :9090 endpoint below down with
+        # it, and that endpoint is what automated rollback depends on.
+        sending_queue:
+          enabled: true
+          queue_size: 1000
+
+      # THE IMPORTANT ONE. Argo Rollouts' AnalysisTemplate queries this
+      # endpoint, IN-CLUSTER, so canary analysis and automatic rollback do not
+      # depend on the hub being reachable at all. Only human viewing does. The
+      # verification log proves it by scaling the hub backend to zero and
+      # re-running a failed rollout.
+      #
+      # This exporter is ONLY in the contrib distribution -- the operator's
+      # default -k8s image does not have it. See the operator's values.
+      #
+      # It renames metrics on the way out: the SDK's
+      # http.server.request.duration is queried here as
+      # http_server_request_duration_seconds_bucket.
+      prometheus:
+        endpoint: "${env:MY_POD_IP}:9090"
+        # Without this, resource attributes -- and so service_name, the only
+        # label distinguishing one service from another -- never reach the
+        # Prometheus series, and the analysis query matches nothing.
+        resource_to_telemetry_conversion:
+          enabled: true
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, tail_sampling, transform/redact, batch]
+          exporters: [otlp_grpc/hub]
+        metrics:
+          receivers: [otlp, k8s_cluster, prometheus]
+          processors: [memory_limiter, batch]
+          # Both: Prometheus for the rollout decision, the hub for a human.
+          exporters: [prometheus, otlp_grpc/hub]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlp_grpc/hub]

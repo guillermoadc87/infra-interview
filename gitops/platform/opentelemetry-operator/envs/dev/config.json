@@ -1,0 +1,7 @@
+{
+  "appName": "opentelemetry-operator",
+  "chartRepo": "https://open-telemetry.github.io/opentelemetry-helm-charts",
+  "chartName": "opentelemetry-operator",
+  "chartVersion": "0.124.1",
+  "namespace": "opentelemetry-operator-system"
+}

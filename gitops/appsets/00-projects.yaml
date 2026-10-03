@@ -41,6 +41,10 @@ spec:
       namespace: argo-rollouts
     - server: "*"
       namespace: observability
+    - server: "*"
+      namespace: cert-manager
+    - server: "*"
+      namespace: opentelemetry-operator-system
   clusterResourceWhitelist:
     # Required because the appsets use CreateNamespace + managedNamespaceMetadata,
     # which brings the Namespace itself under Argo CD management.
@@ -79,6 +83,12 @@ spec:
     # The policies in gitops/platform/kyverno-policies.
     - group: kyverno.io
       kind: ClusterPolicy
+    # The self-signed root and CA issuer in
+    # gitops/platform/cert-manager-issuers. ClusterIssuer is cluster-scoped by
+    # design: the OpenTelemetry Operator's webhook Certificate lives in its own
+    # namespace and has to reference an issuer from outside it.
+    - group: cert-manager.io
+      kind: ClusterIssuer
   namespaceResourceWhitelist:
     - group: "*"
       kind: "*"

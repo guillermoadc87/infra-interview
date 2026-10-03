@@ -1,0 +1,7 @@
+{
+  "appName": "cert-manager",
+  "chartRepo": "https://charts.jetstack.io",
+  "chartName": "cert-manager",
+  "chartVersion": "v1.21.2",
+  "namespace": "cert-manager"
+}

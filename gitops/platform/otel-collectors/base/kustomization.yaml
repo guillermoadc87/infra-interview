@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Kustomize, not Helm, and that is what orders it correctly.
+#
+# platform-helm carries sync-wave -20 and platform-kustomize carries -10, so the
+# OpenTelemetry Operator (which installs the OpenTelemetryCollector CRD and runs
+# the webhook that admits these objects) is created before the objects
+# themselves. Same reason kyverno-policies and cert-manager-issuers are separate
+# components from their charts.
+namespace: observability
+
+resources:
+  - rbac.yaml
+  - agent.yaml
+  - gateway.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: otel-collectors
+      app.kubernetes.io/part-of: platform
+    # false: the operator owns the pod selectors on the Deployment and DaemonSet
+    # it creates from these custom resources, and injecting a selector into a CR
+    # it does not expect would be at best ignored.
+    includeSelectors: false
