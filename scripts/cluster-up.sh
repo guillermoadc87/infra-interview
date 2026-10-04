@@ -23,7 +23,18 @@ else
   # runs postgres + two small Go services + dev-mode Vault, so 3 GiB is ample;
   # the hub runs Argo CD and wants more.
   CPUS="${CPUS:-2}"
-  MEMORY="${MEMORY:-4}"
+  # The hub needs more than a spoke, and 4 GiB is not enough once the
+  # observability backend lands on it.
+  #
+  # Argo CD's own components come to roughly 1.7 GiB. Adding grafana/otel-lgtm
+  # (Prometheus + Tempo + Loki + Grafana in one container, ~2 GiB in practice)
+  # at 4 GiB left 37 MiB available and a load average of 36 -- the API server
+  # stopped answering entirely. Hence 8 for the hub.
+  if [ "$PROFILE" = "$HUB_PROFILE" ]; then
+    MEMORY="${MEMORY:-8}"
+  else
+    MEMORY="${MEMORY:-4}"
+  fi
   info "starting colima profile '$PROFILE' (k3s, ${CPUS} cpu, ${MEMORY} GiB)"
 
   # --network-address gives the VM a routable address. Without it colima leaves
