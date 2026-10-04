@@ -195,7 +195,11 @@ resource requests" on day one would reject pods from the charts this platform
 already runs on. Read `kubectl get polr -A`, then flip them one at a time.
 
 `scripts/cluster-up.sh` now disables k3s's bundled Traefik, so **existing
-clusters need recreating** (or `kubectl -n kube-system delete helmchart traefik`).
+clusters need recreating**. k3s's packaged manifest installs Gateway API v1.3.0
+as well as Traefik itself, and this platform pins v1.6.2 — so if you patch an
+existing cluster instead of recreating it, remove *both* releases
+(`kubectl -n kube-system delete helmchart traefik traefik-crd`), or Argo CD will
+fail to adopt Helm-owned CRDs.
 
 ---
 
