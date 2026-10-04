@@ -58,8 +58,14 @@ EOF
 
 # --------------------------------------------------------- Image Updater ----
 info "installing Argo CD Image Updater ${IMAGE_UPDATER_VERSION}"
+# config/install.yaml, NOT manifests/install.yaml. v1.x moved to a kubebuilder
+# layout and the old path 404s -- which `kubectl apply -f` reports as a parse
+# failure rather than a missing file, so the real cause is not obvious.
+# The CRD this bundle installs is what gitops/bootstrap/hub/imageupdater-cr.yaml
+# below depends on. Nothing in the bundle declares a namespace, so -n argocd
+# places all of it correctly.
 kubectl --context "$HUB_CTX" -n argocd apply \
-  -f "https://raw.githubusercontent.com/argoproj-labs/argocd-image-updater/${IMAGE_UPDATER_VERSION}/manifests/install.yaml" >/dev/null
+  -f "https://raw.githubusercontent.com/argoproj-labs/argocd-image-updater/${IMAGE_UPDATER_VERSION}/config/install.yaml" >/dev/null
 
 # A single ImageUpdater CR covers every Application the ApplicationSets generate.
 # useAnnotations:true tells it to read each Application's own annotations, which
@@ -72,7 +78,8 @@ kubectl --context "$HUB_CTX" -n argocd apply \
 info "applying the ImageUpdater CR"
 kubectl --context "$HUB_CTX" -n argocd apply -f gitops/bootstrap/hub/imageupdater-cr.yaml >/dev/null
 
-kubectl --context "$HUB_CTX" -n argocd rollout status deploy/argocd-image-updater --timeout=180s
+# The Deployment is argocd-image-updater-CONTROLLER under the v1.x layout.
+kubectl --context "$HUB_CTX" -n argocd rollout status deploy/argocd-image-updater-controller --timeout=180s
 
 # ------------------------------------------------------------- root app -----
 info "planting the root Application (App-of-Apps)"

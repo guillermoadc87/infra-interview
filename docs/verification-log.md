@@ -158,6 +158,10 @@ postgres-prod               prod      OutOfSync   Missing       <none>
 `AUTOSYNC <none>` on every prod Application is the `templatePatch` working: the
 `automated` block is withheld for prod, so production cannot self-deploy.
 
+> **Superseded.** Prod is auto-synced now — see §11. The manual sync turned out to
+> gate nothing, since the prod overlay only changes through the promotion PR. What
+> still holds prod apart is the Image Updater exclusion. Left here as recorded.
+
 ## 6. PR previews (trunk-based development)
 
 PR #1 on `feat/preview-demo`, labelled `preview`:
@@ -304,6 +308,90 @@ This is the exact failure the check exists for: resolving from git during the
 write-back window returns the *previous* artifact, silently and plausibly. The
 run was cancelled after the plan job, so no prod tag was pushed and no PR opened.
 
+## 11. Production, promoted and then auto-synced
+
+### The promotion itself
+
+PR #6 (`973b649`) moved the prod overlay one line. A hard refresh showed Argo CD
+seeing the new commit and **declining to act** — the gate, before it was changed:
+
+```
+SYNC=OutOfSync  REV=973b6499b28c42fa7e82940af02c0f5c04baa1d4
+```
+
+After an explicit sync, `operation: Succeeded`. The artifact claim, checked by
+digest rather than by tag:
+
+```
+dev      ghcr.io/guillermoadc87/api-service@sha256:37cb794a...b4f3b
+staging  ghcr.io/guillermoadc87/api-service@sha256:37cb794a...b4f3b
+prod     ghcr.io/guillermoadc87/api-service@sha256:37cb794a...b4f3b
+```
+
+Identical across all three environments. No rebuild happened anywhere on the
+ladder. From inside the prod pod:
+
+```json
+{"environment":"prod","order_limit":100,"orders":0,"version":"638e6b6"}
+```
+
+`order_limit` travelled with the image (category 4); `environment` did not
+(category 3), and neither did the sandbox payments URL.
+
+### The first sync deployed nothing
+
+Worth recording because it looked like success. The Deployment carried the new
+image and every serving pod carried the old one:
+
+```
+desired=3  updated=1  ready=3
+548fd64494  Pending  :prod-20260817T233413Z-638e6b6   <- new
+76bccb6fcd  Running  :prod-20260817T144254Z-15bdb10   <- old
+86cc48b844  Running  :prod-20260817T144254Z-15bdb10   <- old
+86cc48b844  Running  :prod-20260817T144254Z-15bdb10   <- old
+```
+
+`maxSurge=1 / maxUnavailable=0` requires an extra pod before retiring an old one.
+The node was at **1925m of 2000m** requested, so the 200m surge pod could not be
+placed, and `maxUnavailable: 0` forbade freeing room. A deadlock, not a slow
+rollout — and one that appears only on the *first* update, since the initial
+create has no surge to perform. Fixed in PR #7 (`replicas: 3 → 1`); the rollout
+then completed in about ten seconds.
+
+Contributing: two `inventory-service` pods reserve 400m in `ImagePullBackOff` on
+the never-promoted placeholder. Capacity held by containers that cannot start.
+
+### Then prod was made auto-syncing
+
+PR #8 (`fd4d795`). The manual sync gated nothing — the prod overlay only changes
+through the promotion PR, so anyone who could press Sync could already merge. It
+was one gate counted twice. Verified after the change:
+
+```
+api-service-prod        automated={"prune":true,"selfHeal":true}  label=<none>  annotations=0
+inventory-service-prod  automated={"prune":true,"selfHeal":true}  label=<none>  annotations=0
+api-service-dev         automated={"prune":true,"selfHeal":true}  label=enabled   <- control
+```
+
+Prod auto-syncs and remains invisible to Image Updater. The controller agrees:
+
+```
+Processing results: applications=4 images_considered=4 images_updated=0 errors=0
+```
+
+Four — dev and staging, two services each. Prod is absent, which is the property
+the whole arrangement rests on now that manual sync is no longer a second
+backstop. `gitops-validate` therefore checks it structurally, and the check was
+tested against the mutation that defeats a substring grep:
+
+```
+real file      -> prod exclusion holds: image-updater confined to lines 107-117
+sabotaged file -> ::error::image-updater reference outside the prod exclusion at line(s) [124]
+```
+
+Platform components in prod stayed manual by choice: `external-secrets`,
+`postgres`, `reloader`, `vault`, `vault-config` all report `MANUAL`.
+
 ## Bugs this round surfaced (all fixed, all found by running it)
 
 1. **Per-job tag race.** Each matrix job ran its own `date -u`, so one commit
@@ -349,6 +437,15 @@ run was cancelled after the plan job, so no prod tag was pushed and no PR opened
     tag that does not exist. Found by making promotion resolve the tag per
     service, which cannot express the bug; supplying an explicit tag alongside
     `all` is now rejected outright.
+12. **`bootstrap-argocd.sh` could not have installed Image Updater on a fresh
+    machine.** Found by writing the setup guide and checking each command instead
+    of trusting it. Two faults in the same block: the manifest URL
+    (`manifests/install.yaml`) **404s** — v1.x moved to a kubebuilder layout at
+    `config/install.yaml` — and the readiness wait named `deploy/argocd-image-updater`
+    when the Deployment is `argocd-image-updater-controller`. The running cluster
+    hid both, because it was installed before the layout changed. Worth noting how
+    it fails: `kubectl apply -f` on a 404 reports a YAML parse error, not a missing
+    file, so the message points away from the cause.
 
 ## Still not verified
 
