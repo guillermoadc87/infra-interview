@@ -44,5 +44,18 @@ kind: Kustomization
 # prod need the kinds to exist for those overlays to render and apply at all.
 # The routes sit there inert until a controller is promoted to watch them, which
 # then needs no application change.
+# ITS OWN DESTINATION NAMESPACE, which will be empty.
+#
+# Everything here is cluster-scoped, so the Application's destination namespace
+# is almost arbitrary -- and `platform` was the obvious-looking choice, which is
+# why it was the first one. It was wrong: postgres already targets `platform`,
+# and both appsets use CreateNamespace + managedNamespaceMetadata, so the
+# NAMESPACE OBJECT ends up claimed by two Applications. Observed as
+# gateway-api-staging sitting on "waiting for healthy state of
+# /Namespace/platform" while postgres held it.
+#
+# That is precisely the defect the apps' ExternalSecret comments warn about --
+# two Applications owning one resource and fighting over it on every sync -- and
+# an empty namespace is a cheap price for unambiguous ownership.
 resources:
   - https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml

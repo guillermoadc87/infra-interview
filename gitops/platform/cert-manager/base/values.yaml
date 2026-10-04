@@ -20,6 +20,23 @@
 # machines, and the gap is recorded in docs/assessment.md rather than
 # half-solved.
 
+# Leader election OUT of kube-system.
+#
+# The chart defaults global.leaderElection.namespace to kube-system and creates
+# a Role and RoleBinding there for each of the controller and cainjector. The
+# platform AppProject enumerates its destinations and does not include
+# kube-system, so the first sync failed with
+#   namespace kube-system is not permitted in project 'platform'
+#
+# Fixed by moving leader election into cert-manager's own namespace rather than
+# by widening the AppProject. Granting the platform project write access to
+# kube-system to satisfy two RoleBindings would be a bad trade -- and keeping a
+# component's coordination objects in its own namespace is better practice
+# anyway.
+global:
+  leaderElection:
+    namespace: cert-manager
+
 # The chart installs its own CRDs. ServerSideApply is set globally on the
 # platform appset, which is what keeps the large Certificate CRD under the
 # client-side annotation limit -- the same reason external-secrets needs it.
