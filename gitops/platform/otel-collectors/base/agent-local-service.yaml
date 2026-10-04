@@ -1,0 +1,50 @@
+# A Service that reaches the agent ON THE CALLER'S OWN NODE.
+#
+# The operator creates its own Service (otel-agent-collector), and that one is a
+# normal ClusterIP: kube-proxy load-balances across every agent pod in the
+# DaemonSet, so a pod on node A can have its telemetry handled by the agent on
+# node B. Not broken -- k8s_attributes resolves the sender by pod IP through the
+# API server, not by locality -- but it adds a network hop for every span and
+# defeats the point of running an agent per node.
+#
+# internalTrafficPolicy: Local fixes that: endpoints are filtered to the
+# caller's own node. One stable DNS name, genuinely node-local.
+#
+# WHY NOT THE TEXTBOOK hostPort + $(NODE_IP) PATTERN. Because PSS `baseline`
+# forbids host ports exactly as it forbids hostPath, and the platform Kustomize
+# appset stamps enforce: baseline onto every namespace it creates. Using NODE_IP
+# would mean moving this namespace out of baseline -- a real security decision
+# for a convenience this Service provides for free.
+#
+# WHY NOT THE CR'S OWN FIELD. OpenTelemetryCollector v1beta1 exposes
+# `trafficDistribution`, which is ZONE-level (PreferClose), not node-level, and
+# no internalTrafficPolicy. So the Service is declared here instead, selecting
+# the operator's pods directly -- the label set is from the operator's
+# internal/manifests/manifestutils/labels.go, not guessed.
+#
+# ONE BEHAVIOUR TO KNOW: `Local` FAILS CLOSED. With no agent pod on a node,
+# traffic from that node is dropped rather than falling back to another node.
+# For a DaemonSet that is normally fine, and pkg/obs retries rather than
+# crashing, so the degradation is lost telemetry and not a broken application.
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-agent-local
+  namespace: observability
+spec:
+  internalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/managed-by: opentelemetry-operator
+    app.kubernetes.io/part-of: opentelemetry
+    app.kubernetes.io/component: opentelemetry-collector
+    # "<namespace>.<cr-name>" -- the operator's instance label format.
+    app.kubernetes.io/instance: observability.otel-agent
+  ports:
+    - name: otlp
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP

@@ -16,7 +16,17 @@ spec:
           env:
             - name: ENVIRONMENT
               value: dev
-            # CATEGORY 3, and the clearest example of why the category exists.
+            # CATEGORY 3 note: OTEL_EXPORTER_OTLP_ENDPOINT used to live here too,
+            # and it was the one value in this file identical for every service
+            # -- so it was duplicated per service instead of stated once. It now
+            # comes from the `otel-defaults` ConfigMap owned by
+            # gitops/platform/otel-collectors, consumed via envFrom in
+            # base/deployment.yaml.
+            #
+            # The category-3 reasoning is unchanged and in fact stronger: the
+            # collector's address is environment infrastructure that must never
+            # travel with a promotion, and it is now owned by the environment's
+            # own platform layer rather than by a file in the application tree.
             #
             # This is an environment's own infrastructure address. It must never
             # travel with a promotion -- shipping dev's collector endpoint to
@@ -29,12 +39,3 @@ spec:
             # than an error, so staging and prod keep working with no telemetry
             # and no connection-refused noise. Promoting the collectors to
             # another environment means adding this one line to that variant.
-            # "-collector" is appended by the OpenTelemetry Operator: it names
-            # a collector's Service after the custom resource plus that suffix.
-            # The collectors used to be plain Helm releases whose Service was
-            # just `otel-agent`, so this value changed when they became custom
-            # resources -- and a stale name here is silent, because pkg/obs
-            # treats an unreachable collector as something to retry rather than
-            # an error.
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: http://otel-agent-collector.observability.svc.cluster.local:4317

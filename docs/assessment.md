@@ -238,9 +238,75 @@ observability library would have rebuilt nothing.
 
 ---
 
+### The cluster-level telemetry endpoint
+
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set **once per cluster**, in the
+`otel-defaults` ConfigMap that `gitops/platform/otel-collectors` owns — the same
+component that owns the collector it points at. Every service consumes it with
+one line in `base/deployment.yaml`:
+
+```yaml
+envFrom:
+  - configMapRef: {name: otel-defaults, optional: true}
+```
+
+So a new service is instrumented by existing, not by being configured. It
+previously sat in each service's `variants/env/<env>/env-identity.yaml`, which
+meant the same string repeated per service per environment — `SOLUTION.md`
+already flagged that as the duplication that breaks down past about five
+services.
+
+`optional: true` is the whole design. Only clusters running the collectors carry
+the ConfigMap, so on staging and prod the variable is absent and `pkg/obs`
+treats that as "telemetry disabled" — the *absence* of the file is still the
+feature flag. Measured both ways: without `optional`, a missing ConfigMap gives
+`CreateContainerConfigError: configmap "otel-defaults" not found` and no pod
+starts at all.
+
+Applications reach the agent through a Service with
+`internalTrafficPolicy: Local`, which is node-local without a hostPort — PSS
+`baseline` forbids host ports exactly as it forbids hostPath, so the textbook
+`$(NODE_IP)` pattern is unavailable here. It fails closed: no agent on a node
+means dropped exports, which `pkg/obs` retries rather than crashing on.
+
 ## 4. What is verified, and what is not
 
-Verified by running it:
+The endpoint mechanism was exercised **on the live dev cluster**, in a throwaway
+namespace, with the real instrumented image and nothing Argo CD manages:
+
+| # | Assertion | Result |
+|---|---|---|
+| 1 | `envFrom` delivers the endpoint into the container | present — and correctly **absent** from `spec.env` |
+| 2 | the application uses it | logs `observability initialised` with that endpoint |
+| 3 | telemetry reaches the agent | 25 spans / 25 log records / metrics for 25 requests |
+| 4 | probe traffic excluded | 25 `/healthz` requests produced **zero** spans |
+| 5 | reaches Prometheus, Tempo and Loki | semconv metric with `service_name` + `http_route`; traces named by route; logs carrying `trace_id` and `span_id` |
+| 6 | no ConfigMap degrades gracefully | pod `Running`, logs `observability disabled` |
+| 7 | `optional: true` is load-bearing | removing it → `CreateContainerConfigError` |
+| 8 | the node-local Service | `internalTrafficPolicy: Local`, endpoint = the agent pod |
+
+**That testing found a real bug in the canary analysis.** With every request
+returning 500 — a total outage, the exact case the gate exists to catch — the
+success-rate query returned an EMPTY result rather than `0`, because no non-5xx
+series exists for `sum()` to aggregate. Argo Rollouts records EMPTY as
+*Inconclusive*, not *Failed*, so a completely broken version would have sat at
+its canary weight waiting for a human instead of rolling back. Exactly backwards
+from the purpose of the gate.
+
+Invisible to every static check: the query is valid PromQL and returns correct
+values whenever the service is healthy. Fixed with `or vector(0)` on the
+numerator, re-measured against the same live failing state:
+
+```
+without or vector(0)  ->  EMPTY   (Inconclusive — the bug)
+with    or vector(0)  ->  0       (fails >= 0.95, aborts — correct)
+no traffic at all     ->  EMPTY   (Inconclusive — correct: no data is not success)
+```
+
+The denominator is deliberately left alone, so genuine absence of traffic stays
+Inconclusive rather than passing vacuously.
+
+Also verified by running it:
 
 - Both images build with the new root context; the container starts, serves,
   and exits 0 on SIGTERM.

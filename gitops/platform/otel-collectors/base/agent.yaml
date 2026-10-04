@@ -19,6 +19,7 @@ apiVersion: opentelemetry.io/v1beta1
 kind: OpenTelemetryCollector
 metadata:
   name: otel-agent
+  namespace: observability
 spec:
   mode: daemonset
   serviceAccount: otel-agent

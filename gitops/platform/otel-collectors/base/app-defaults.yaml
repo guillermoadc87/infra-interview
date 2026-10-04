@@ -1,0 +1,40 @@
+# THE CLUSTER-LEVEL TELEMETRY CONTRACT, in one object.
+#
+# This is how an application gets an OTLP endpoint without any per-application
+# or per-environment configuration. The services' base/deployment.yaml carries
+#
+#   envFrom:
+#     - configMapRef: {name: otel-defaults, optional: true}
+#
+# so the endpoint is owned HERE, by the component that also owns the collectors
+# it points at. Adding a twelfth service costs nothing: it inherits the same
+# line from base and the value follows automatically.
+#
+# WHY THIS AND NOT A PER-APP env ENTRY. The endpoint used to live in each
+# service's variants/env/dev/env-identity.yaml, which meant the same string
+# repeated once per service per environment -- and SOLUTION.md already flagged
+# that duplication as the thing that breaks down past ~5 services. It is also
+# genuinely cluster-scoped information: WHERE the collector is, is a property of
+# the cluster, not of any application in it.
+#
+# `optional: true` ON THE CONSUMER SIDE IS LOAD-BEARING. Only clusters running
+# the collectors carry this ConfigMap. On staging and prod it is simply absent,
+# the variable is unset, and pkg/obs treats that as "telemetry disabled" rather
+# than an error -- so the ABSENCE of this file is still the feature flag, which
+# is the property the old variants/ placement had and which must not be lost.
+# Without `optional`, a missing ConfigMap would instead block every pod from
+# starting with CreateContainerConfigError.
+#
+# NOTE this object lives in `shop`, not `observability`: envFrom resolves a
+# ConfigMap in the POD's namespace. That is why base/kustomization.yaml sets no
+# namespace transformer and each resource declares its own -- a transformer
+# would drag this into observability where no application could see it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-defaults
+  namespace: shop
+data:
+  # Points at the node-local Service, not the operator's default
+  # otel-agent-collector. See agent-local-service.yaml.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-agent-local.observability.svc.cluster.local:4317

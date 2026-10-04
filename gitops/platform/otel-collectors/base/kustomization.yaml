@@ -8,12 +8,22 @@ kind: Kustomization
 # the webhook that admits these objects) is created before the objects
 # themselves. Same reason kyverno-policies and cert-manager-issuers are separate
 # components from their charts.
-namespace: observability
+#
+# NO `namespace:` TRANSFORMER, deliberately. app-defaults.yaml must land in
+# `shop` -- envFrom resolves a ConfigMap in the POD's namespace -- while
+# everything else belongs in `observability`. A transformer applies to every
+# resource, so it would drag the ConfigMap somewhere no application can see it.
+# Each resource therefore declares its own namespace explicitly.
 
 resources:
   - rbac.yaml
   - agent.yaml
   - gateway.yaml
+  # The node-local Service the applications actually address.
+  - agent-local-service.yaml
+  # The cluster-level endpoint, consumed by every app via envFrom. Lives in
+  # `shop`, which is why the platform AppProject now lists that namespace.
+  - app-defaults.yaml
 
 labels:
   - pairs:

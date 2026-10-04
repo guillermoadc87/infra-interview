@@ -45,6 +45,19 @@ spec:
       namespace: cert-manager
     - server: "*"
       namespace: opentelemetry-operator-system
+    # `shop` is an APPLICATION namespace, and the platform layer writes exactly
+    # one object into it: the otel-defaults ConfigMap that carries the cluster's
+    # OTLP endpoint (gitops/platform/otel-collectors/base/app-defaults.yaml).
+    #
+    # Deliberate, and narrow. The endpoint is cluster-scoped information owned by
+    # the component that also owns the collector, so duplicating it into every
+    # application overlay would be the wrong home for it. Note this is NOT the
+    # defect the old shared `postgres-credentials` Secret had: that was two
+    # Applications owning the SAME resource and fighting over it on every sync.
+    # Here two Applications own different resources that happen to share a
+    # namespace, which Argo CD handles without contention.
+    - server: "*"
+      namespace: shop
   clusterResourceWhitelist:
     # Required because the appsets use CreateNamespace + managedNamespaceMetadata,
     # which brings the Namespace itself under Argo CD management.
