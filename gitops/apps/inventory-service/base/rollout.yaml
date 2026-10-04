@@ -25,6 +25,16 @@ spec:
   # Owner: envs/<env>/replicas.yaml (config category 2). Note that with
   # workloadRef the ROLLOUT owns the replica count -- the Deployment is scaled
   # to zero -- which is why that patch now targets this kind.
+  # Bound the ReplicaSet history.
+  #
+  # Argo CD's Application has revisionHistoryLimit: 5, but that governs ARGO's
+  # sync history, not the workload's ReplicaSets -- a Rollout keeps 10 by
+  # default and a Deployment likewise. Prod had accumulated HUNDREDS of empty
+  # ReplicaSets, because inventory-service there is pinned to a placeholder tag
+  # that can never pull, so every reconcile over 48 days left another one
+  # behind. They hold no pods and no resources, but they make `get rs`
+  # unreadable and they are a symptom worth not having.
+  revisionHistoryLimit: 3
   workloadRef:
     apiVersion: apps/v1
     kind: Deployment
