@@ -1,0 +1,134 @@
+# A minimal Prometheus, and the reason it exists is a correction.
+#
+# The otel-gateway exposes a `prometheus` EXPORTER on :9090, and the Argo
+# Rollouts AnalysisTemplate was pointed straight at it. That cannot work, and it
+# failed in the most confusing possible way:
+#
+#   AnalysisRun phase=Error
+#   "Metric success-rate assessed Error due to consecutiveErrors (5) >
+#    consecutiveErrorLimit (4): client_error: client error: 404"
+#   -> RolloutAborted
+#
+# A collector's prometheus exporter serves a SCRAPE endpoint. It is not a
+# Prometheus server and implements no query API:
+#
+#   /metrics       -> 200
+#   /api/v1/query  -> 404     <- what Rollouts actually calls
+#
+# So the canary gate 404'd on every measurement and aborted the rollout, while
+# the metrics themselves were perfectly fine and visible at /metrics. Nothing
+# about "404" points at the distinction between a scrape target and a query
+# engine.
+#
+# Something has to serve PromQL in-cluster. This is that, deliberately small.
+#
+# WHY NOT QUERY THE HUB'S PROMETHEUS instead, which is a real server and already
+# running: because it would make a rollback decision depend on cross-VM
+# networking and on the hub being up. Keeping the decision local is the whole
+# point of the gateway exporting twice; this component is what makes that claim
+# true rather than aspirational.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: observability
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    scrape_configs:
+      # One target: the gateway collector's prometheus exporter, which already
+      # carries the applications' metrics with their resource attributes
+      # flattened into labels (service_name, http_route, ...).
+      - job_name: otel-gateway
+        static_configs:
+          - targets: ["otel-gateway-collector.observability.svc.cluster.local:9090"]
+        # The exporter sets `job` and `instance` from OTel resource attributes.
+        # Without this, Prometheus overwrites them with its own scrape labels and
+        # service_instance_id stops lining up with what the backend shows.
+        honor_labels: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      securityContext:
+        # The image's default user. Declared so this satisfies PSS baseline and
+        # would also satisfy restricted.
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.7.3
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            # TWO HOURS. This is a decision input, not a system of record: the
+            # only consumer is a canary analysis with a 2-minute rate window.
+            # Long-term data lives in the hub backend, which receives the same
+            # metrics over OTLP.
+            - --storage.tsdb.retention.time=2h
+            - --web.enable-lifecycle
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet: {path: /-/ready, port: http}
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: {path: /-/healthy, port: http}
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        # emptyDir, not a PVC: two hours of one scrape target, and losing it on
+        # a restart costs a canary one inconclusive measurement.
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: observability
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http

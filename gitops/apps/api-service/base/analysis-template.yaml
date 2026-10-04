@@ -26,7 +26,20 @@ spec:
       # re-running a failed rollout.
       provider:
         prometheus:
-          address: http://otel-gateway-collector.observability.svc.cluster.local:9090
+          # A PROMETHEUS SERVER, not the collector.
+          #
+          # This pointed at otel-gateway-collector:9090 first, which is the
+          # collector's prometheus EXPORTER -- a scrape endpoint with no query
+          # API. Rollouts calls /api/v1/query, got 404 on every measurement, and
+          # aborted the rollout with "consecutiveErrors (5) >
+          # consecutiveErrorLimit (4)". The metrics were fine the whole time and
+          # visible at /metrics; nothing in a 404 suggests the difference between
+          # a scrape target and a query engine.
+          #
+          # gitops/platform/prometheus scrapes that exporter and serves PromQL.
+          # Still IN-CLUSTER, which is the point: a rollback decision must not
+          # depend on the hub being reachable.
+          address: http://prometheus.observability.svc.cluster.local:9090
           # The metric name is the OpenTelemetry semantic convention
           # http.server.request.duration, as the collector's Prometheus exporter
           # renames it. pkg/obs owns the instrumentation that produces it; the

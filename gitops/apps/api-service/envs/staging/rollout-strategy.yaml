@@ -25,14 +25,15 @@ spec:
         - setWeight: 50
         - pause: {duration: 60s}
         - setWeight: 100
-      analysis:
-        templates:
-          - templateName: api-service-success-rate
-        args:
-          - name: service-name
-            value: api-service
-        # Runs ALONGSIDE the steps from the beginning, rather than as a blocking
-        # gate between them. A background analysis that fails aborts the rollout
-        # at whatever step it has reached, which is the behaviour that matters:
-        # the abort should not wait for the next pause to end.
-        startingStep: 1
+      # NO `analysis:` BLOCK ON STAGING, deliberately.
+      #
+      # The collectors and Prometheus are dev-only, so there is no metrics
+      # source here -- and an analysis whose provider does not exist does not
+      # degrade gracefully, it ERRORS and aborts the rollout. That is exactly
+      # what happened on the first deploy, on both services.
+      #
+      # Staging still gets the canary STEPS, so a bad image is exposed to 25% of
+      # traffic behind a 60-second pause rather than all of it at once. What it
+      # does not get is automatic abort on a metric, and it should not pretend
+      # to: promoting the collectors to staging means adding the analysis block
+      # back, in the same commit.
