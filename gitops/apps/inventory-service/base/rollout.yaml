@@ -1,0 +1,47 @@
+# Argo Rollouts, via workloadRef -- the Deployment stays a Deployment.
+#
+# THIS IS NOT A STYLE CHOICE. Converting base/deployment.yaml to kind: Rollout
+# was the first attempt and it silently destroys this repo's config model.
+#
+# Kustomize resolves strategic-merge patches using the built-in OpenAPI schema.
+# It has no schema for a CRD, so list fields are REPLACED instead of merged by
+# key. Measured, not assumed: patching a Rollout with
+#
+#   containers: [{name: inventory-service, env: [{name: ENVIRONMENT, value: dev}]}]
+#
+# produced a container with ONLY that env var -- image, ports, probes, resources
+# and every other env entry gone. Every file under variants/ and envs/ patches
+# the workload, so all of them would have quietly gutted it.
+#
+# workloadRef sidesteps it entirely: the pod template keeps living on the
+# Deployment, where kustomize knows how to merge it, and this object only carries
+# rollout STRATEGY. Config category 2 and 3 patches are untouched.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: inventory-service
+spec:
+  # spec.replicas is DELIBERATELY ABSENT, exactly as on the Deployment.
+  # Owner: envs/<env>/replicas.yaml (config category 2). Note that with
+  # workloadRef the ROLLOUT owns the replica count -- the Deployment is scaled
+  # to zero -- which is why that patch now targets this kind.
+  workloadRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inventory-service
+    # Scale the Deployment to zero once the Rollout is serving. 'onsuccess'
+    # rather than 'never' so there is no window where both controllers own a
+    # replica set, and not 'progressively' because at one replica that would
+    # mean a moment with no pods at all.
+    scaleDown: onsuccess
+  strategy:
+    canary:
+      # NO STEPS BY DEFAULT, so this behaves as an ordinary rolling update.
+      #
+      # Deliberate: prod is a 2-CPU VM running one replica (see
+      # envs/prod/replicas.yaml for the deadlock that forced that), and a canary
+      # needs at least one extra pod plus enough traffic to judge it. Neither
+      # exists there. dev and staging opt in via rollout-strategy.yaml.
+      steps: []
+      maxSurge: 1
+      maxUnavailable: 0

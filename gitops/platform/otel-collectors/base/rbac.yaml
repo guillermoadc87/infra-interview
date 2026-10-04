@@ -1,0 +1,105 @@
+# RBAC the Helm chart used to generate, now written out.
+#
+# The `opentelemetry-collector` chart has `presets` (kubernetesAttributes,
+# kubeletMetrics, clusterMetrics) that each switch on a receiver AND add the
+# ClusterRole rules it needs. The Operator has no equivalent -- an
+# OpenTelemetryCollector names a serviceAccount and expects you to have granted
+# it what its config requires.
+#
+# That is more YAML and it is also strictly better: the permissions each
+# collector holds are now reviewable in a diff instead of being implied by a
+# boolean. They are split per collector so the DaemonSet, which runs on every
+# node, cannot read cluster-wide workload inventory it has no use for.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-agent
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-agent
+rules:
+  # k8s_attributes: resolve a pod IP to pod/namespace/node, and follow
+  # ReplicaSet ownership up to the Deployment so spans carry a workload name.
+  - apiGroups: [""]
+    resources: [pods, namespaces, nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  # kubelet_stats: pod and container CPU/memory from the local kubelet.
+  # nodes/stats is the read-only summary API -- NOT nodes/proxy, which would
+  # allow arbitrary requests to the kubelet.
+  - apiGroups: [""]
+    resources: [nodes/stats]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-agent
+subjects:
+  - kind: ServiceAccount
+    name: otel-agent
+    namespace: observability
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-gateway
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-gateway
+rules:
+  # k8s_cluster: cluster-level inventory and counts, read from the API server.
+  # Wider than the agent's on purpose -- and it is why this collector is a
+  # single-replica Deployment rather than a DaemonSet: one reader of the whole
+  # cluster, not one per node.
+  - apiGroups: [""]
+    resources:
+      - events
+      - namespaces
+      - namespaces/status
+      - nodes
+      - nodes/spec
+      - pods
+      - pods/status
+      - replicationcontrollers
+      - replicationcontrollers/status
+      - resourcequotas
+      - services
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [daemonsets, deployments, replicasets, statefulsets]
+    verbs: [get, list, watch]
+  - apiGroups: [extensions]
+    resources: [daemonsets, deployments, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-gateway
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-gateway
+subjects:
+  - kind: ServiceAccount
+    name: otel-gateway
+    namespace: observability

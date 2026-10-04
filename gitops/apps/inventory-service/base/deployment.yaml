@@ -46,10 +46,54 @@ spec:
           ports:
             - name: http
               containerPort: 8081
+          # THE CLUSTER-LEVEL TELEMETRY CONTRACT, inherited rather than configured.
+          #
+          # otel-defaults carries OTEL_EXPORTER_OTLP_ENDPOINT and is owned by
+          # gitops/platform/otel-collectors -- the component that also owns the
+          # collector it points at. So the endpoint is set once per cluster, and
+          # a new service gets it by existing rather than by being configured.
+          # It used to be repeated in every variants/env/<env>/env-identity.yaml.
+          #
+          # optional: true IS LOAD-BEARING. Only clusters running the collectors
+          # have this ConfigMap; on staging and prod it is absent, the variable
+          # is unset, and pkg/obs treats that as "telemetry disabled". Without
+          # `optional` a missing ConfigMap would stop every pod from starting
+          # with CreateContainerConfigError -- so that one word is the whole
+          # difference between "no telemetry here" and "no application here".
+          #
+          # Precedence note: an `env` entry below WINS over envFrom on a key
+          # collision, so a per-environment override is still possible.
+          envFrom:
+            - configMapRef:
+                name: otel-defaults
+                optional: true
           env:
             # --- identical in every environment => belongs in base ---
             - name: PORT
               value: "8081"
+            # Pod identity for telemetry, from the downward API.
+            #
+            # pkg/obs turns these into the k8s.* resource attributes and
+            # service.instance.id, which is what makes "which replica served
+            # this request" answerable. The agent's k8sattributes processor also
+            # enriches by source IP; carrying them here means a pod still
+            # identifies itself when that association fails.
+            #
+            # In base because they are identical in every environment. The
+            # collector ENDPOINT is not -- it lives in variants/env/<env>/,
+            # config category 3, and is absent where no collector runs.
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: K8S_NAMESPACE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             - name: DB_HOST
               value: postgres.platform.svc.cluster.local
             - name: DB_NAME

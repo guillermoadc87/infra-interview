@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Kustomize, not Helm, and that is what orders it correctly.
+#
+# platform-helm carries sync-wave -20 and platform-kustomize carries -10, so the
+# cert-manager CHART (which installs the ClusterIssuer and Certificate CRDs) is
+# created before these objects that need them. Same reason kyverno-policies is
+# separate from kyverno. Within this single Application, Argo CD also applies
+# the Certificate and the ClusterIssuers in a sensible order by kind.
+namespace: cert-manager
+
+resources:
+  - cluster-issuers.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: cert-manager-issuers
+      app.kubernetes.io/part-of: platform
+    # No pod selector to keep in sync.
+    includeSelectors: false

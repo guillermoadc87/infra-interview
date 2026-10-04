@@ -35,6 +35,27 @@ else
     --kubernetes
     --cpu "$CPUS" --memory "$MEMORY" --disk 20
     --network-address
+    # k3s bundles its own Traefik, installed from a HelmChart CR in kube-system.
+    # That copy exists in no git repository, so it directly contradicts the
+    # claim this script's header makes -- that the only thing produced here is a
+    # bare node and everything else arrives through Argo CD. It is also the one
+    # pre-existing workload that was never accounted for anywhere.
+    #
+    # gitops/platform/traefik replaces it. servicelb (klipper) is deliberately
+    # NOT disabled: it is what assigns the Traefik Service the VM's own address,
+    # which is what makes the app reachable without a port-forward.
+    #
+    # The packaged manifest declares TWO HelmCharts, `traefik-crd` and
+    # `traefik`, and this flag removes the manifest so both go away -- including
+    # the Gateway API v1.3.0 CRDs that traefik-crd installs. Deliberate:
+    # gitops/platform/gateway-api owns those CRDs and pins a different version.
+    #
+    # NOTE this only affects clusters created from here on. An existing cluster
+    # keeps the bundled copies until you either recreate it or delete BOTH --
+    # dropping only `traefik` leaves the v1.3.0 CRDs behind, Helm-owned, and
+    # Argo CD then fails to adopt them with a field-ownership conflict:
+    #   kubectl -n kube-system delete helmchart traefik traefik-crd
+    --k3s-arg="--disable=traefik"
   )
 
   # Spokes must be reachable FROM the hub VM. That traffic goes over lima's

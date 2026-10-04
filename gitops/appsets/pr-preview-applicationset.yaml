@@ -108,6 +108,37 @@ spec:
           images:
             - ghcr.io/guillermoadc87/api-service:pr-{{.head_short_sha_7}}
             - ghcr.io/guillermoadc87/inventory-service:pr-{{.head_short_sha_7}}
+          # Give each preview its OWN URL path, so N open PRs do not all claim
+          # /api on the shared Gateway -- first one to sync wins and the rest
+          # silently serve someone else's branch.
+          #
+          # JSON 6902 rather than a strategic merge, because the target is a
+          # CRD: kustomize has no schema for HTTPRoute, so a strategic merge
+          # would REPLACE spec.rules wholesale and drop the URLRewrite filter
+          # with it. A JSON patch needs no schema. (The same schema gap is why
+          # the workload is still a Deployment -- see apps/*/base/rollout.yaml.)
+          #
+          # `name` matches the PRE-SUFFIX name: kustomize applies patches before
+          # the name transformers, verified by rendering this overlay with
+          # nameSuffix set the way Argo CD sets it.
+          #
+          # The URLRewrite in base strips whatever prefix matched, so the service
+          # still sees /orders/summary.
+          patches:
+            - target:
+                kind: HTTPRoute
+                name: api-service
+              patch: |-
+                - op: replace
+                  path: /spec/rules/0/matches/0/path/value
+                  value: /pr-{{.branch_slug}}/api
+            - target:
+                kind: HTTPRoute
+                name: inventory-service
+              patch: |-
+                - op: replace
+                  path: /spec/rules/0/matches/0/path/value
+                  value: /pr-{{.branch_slug}}/inventory
       destination:
         # Previews always land on dev. `name` (not `server`) so this keeps working
         # if the dev cluster's address changes.

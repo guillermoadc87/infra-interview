@@ -1,0 +1,80 @@
+# The OpenTelemetry Operator -- what cert-manager was added to unblock.
+#
+# It replaces two plain `opentelemetry-collector` Helm releases with real API
+# objects: the collector topology is now two OpenTelemetryCollector custom
+# resources in gitops/platform/otel-collectors, which `kubectl get` can show and
+# which CI validates against the CRD schema (v1beta1 types spec.config as a
+# structured object, so a malformed pipeline now fails in a pull request rather
+# than in a CrashLoopBackOff).
+#
+# It also brings the Instrumentation CRD, which is not used and is worth saying
+# why: Go auto-instrumentation is eBPF-based and needs elevated privileges,
+# which would break the applications' runAsNonRoot / readOnlyRootFilesystem /
+# PSS-baseline posture. For Go, pkg/obs is the correct answer. The CRD becomes
+# genuinely useful the day a JVM or Python service arrives.
+
+manager:
+  collectorImage:
+    # CONTRIB, overriding the chart's default of -k8s.
+    #
+    # Not a preference -- the k8s distribution HAS NO PROMETHEUS EXPORTER.
+    # Checked rather than assumed:
+    #   docker run --rm --entrypoint /otelcol-k8s <k8s-image> components
+    # lists exporters as debug, file, load_balancing, nop, otelarrow, otlp_grpc,
+    # otlp_http. No prometheus.
+    #
+    # That exporter is load-bearing: the gateway exposes :9090 in-cluster and
+    # Argo Rollouts' AnalysisTemplate queries it, which is the only reason
+    # canary analysis and automatic rollback do not depend on the hub being
+    # reachable. The k8s distro would have silently removed that property --
+    # the collector would fail to start on an unknown exporter, after the
+    # Rollout had already been told to analyse.
+    #
+    # Contrib also carries kubelet_stats and k8s_attributes, which the k8s
+    # distro does have, so nothing is lost by using it.
+    repository: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib
+    tag: 0.160.0
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+admissionWebhooks:
+  certManager:
+    # THE WHOLE REASON cert-manager IS IN THIS PLATFORM.
+    #
+    # The alternative, autoGenerateCert, uses Helm's genSignedCert, which
+    # produces a different certificate on every render. Argo CD renders on every
+    # reconcile, so the Secret and this webhook's caBundle would be permanently
+    # OutOfSync and no sync could ever settle them.
+    enabled: true
+    # Chain off the cluster CA rather than letting the operator create its own
+    # self-signer, so there is ONE root in the cluster instead of one per
+    # consumer. See gitops/platform/cert-manager-issuers.
+    #
+    # The cost, stated: this Application now depends on a Certificate owned by a
+    # DIFFERENT Application being ready. On a fresh cluster the webhook cert is
+    # Pending until cert-manager-issuers syncs, and the collector CRs cannot be
+    # admitted until it is -- three links deep. It converges on the appset's
+    # retry, same as the Traefik/gateway-api ordering. If that chain ever proves
+    # annoying, deleting these three lines falls back to the operator's own
+    # self-signer and costs only the shared root.
+    issuerRef:
+      kind: ClusterIssuer
+      name: cluster-ca
+      group: cert-manager.io
+
+# The chart installs the CRDs (OpenTelemetryCollector, Instrumentation,
+# OpAMPBridge, TargetAllocator). Kept on deletion for the same reason as
+# cert-manager's: removing the CRD would cascade into deleting every collector
+# in the cluster.
+crds:
+  create: true
+
+# NOTE there is deliberately no `metrics:`/ServiceMonitor block here -- this
+# chart version has no such key, and this platform runs no Prometheus Operator
+# anyway. The operator's own metrics are reachable on its metrics port and can
+# be added to the gateway's prometheus receiver if they are ever wanted.

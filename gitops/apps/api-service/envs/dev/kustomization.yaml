@@ -16,6 +16,9 @@ components:
 patches:
   # CATEGORY 2 — Kubernetes settings. NEVER promoted. One concern per file.
   - path: replicas.yaml
+  # Opts this environment into a canary with automated abort. Absent from prod,
+  # which cannot host one -- see base/rollout.yaml.
+  - path: rollout-strategy.yaml
   # CATEGORY 4 — non-static business settings. PROMOTED as a verbatim file copy.
   - path: settings.yaml
 

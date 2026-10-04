@@ -28,6 +28,36 @@ spec:
       namespace: external-secrets
     - server: "*"
       namespace: reloader
+    # Added with the platform layer below. Each one is listed EXPLICITLY on
+    # purpose: an Application whose namespace is missing here is rejected before
+    # it ever syncs, with "application destination ... do not match any of the
+    # allowed destinations in project 'platform'". That is the first thing to
+    # check when a new component appears to do nothing.
+    - server: "*"
+      namespace: traefik
+    - server: "*"
+      namespace: kyverno
+    - server: "*"
+      namespace: argo-rollouts
+    - server: "*"
+      namespace: observability
+    - server: "*"
+      namespace: cert-manager
+    - server: "*"
+      namespace: opentelemetry-operator-system
+    # `shop` is an APPLICATION namespace, and the platform layer writes exactly
+    # one object into it: the otel-defaults ConfigMap that carries the cluster's
+    # OTLP endpoint (gitops/platform/otel-collectors/base/app-defaults.yaml).
+    #
+    # Deliberate, and narrow. The endpoint is cluster-scoped information owned by
+    # the component that also owns the collector, so duplicating it into every
+    # application overlay would be the wrong home for it. Note this is NOT the
+    # defect the old shared `postgres-credentials` Secret had: that was two
+    # Applications owning the SAME resource and fighting over it on every sync.
+    # Here two Applications own different resources that happen to share a
+    # namespace, which Argo CD handles without contention.
+    - server: "*"
+      namespace: shop
   clusterResourceWhitelist:
     # Required because the appsets use CreateNamespace + managedNamespaceMetadata,
     # which brings the Namespace itself under Argo CD management.
@@ -51,6 +81,27 @@ spec:
     # could not be served by a namespaced SecretStore.
     - group: external-secrets.io
       kind: ClusterSecretStore
+    # --- added with the platform layer -----------------------------------
+    # Kyverno reconciles its own webhook configurations at runtime, so Argo CD
+    # does not manage those; this is for the chart's static ones and for the
+    # OpenTelemetry pieces that may follow.
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+    # The Traefik chart renders a GatewayClass (cluster-scoped) when the
+    # kubernetesGateway provider is enabled, and an IngressClass always.
+    - group: gateway.networking.k8s.io
+      kind: GatewayClass
+    - group: networking.k8s.io
+      kind: IngressClass
+    # The policies in gitops/platform/kyverno-policies.
+    - group: kyverno.io
+      kind: ClusterPolicy
+    # The self-signed root and CA issuer in
+    # gitops/platform/cert-manager-issuers. ClusterIssuer is cluster-scoped by
+    # design: the OpenTelemetry Operator's webhook Certificate lives in its own
+    # namespace and has to reference an issuer from outside it.
+    - group: cert-manager.io
+      kind: ClusterIssuer
   namespaceResourceWhitelist:
     - group: "*"
       kind: "*"

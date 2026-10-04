@@ -118,7 +118,7 @@ jobs:
             echo "preview requested -> building the full stack" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          # Match ONLY the service's own directory.
+          # Match the service's own directory, PLUS the shared library.
           #
           # This previously also matched .github/workflows/ci.yml, which fires for
           # EVERY service -- so any edit to the pipeline rebuilt everything.
@@ -126,12 +126,20 @@ jobs:
           # inventory-service was rebuilt and republished with no source change,
           # producing an image byte-identical to the previous one under a new tag.
           #
-          # An image's content comes from the service's source and its Dockerfile,
-          # both under apps/<svc>/. A workflow change cannot alter those bytes, so
-          # rebuilding on one is pure waste.
+          # The rule that replaced it was "an image's content comes from the
+          # service's source and its Dockerfile, both under apps/<svc>/". That
+          # stopped being true when pkg/obs arrived: it is compiled INTO both
+          # binaries via a replace directive, so a change there changes both
+          # images while touching nothing under apps/. Left unmatched, editing
+          # the observability library would rebuild nothing at all and the
+          # change would appear to have no effect.
+          #
+          # A workflow change still rebuilds nothing, which is the original point.
           svcs=()
           for s in api-service inventory-service; do
-            if [ "$wants_preview" = "true" ] || grep -qE "^apps/${s}/" <<<"$changed"; then
+            if [ "$wants_preview" = "true" ] \
+               || grep -qE "^apps/${s}/" <<<"$changed" \
+               || grep -qE "^pkg/obs/" <<<"$changed"; then
               svcs+=("$s")
             fi
           done
@@ -171,8 +179,12 @@ jobs:
         with:
           go-version-file: apps/${{ matrix.service }}/go.mod
           # Per-service cache key, so changing one service does not invalidate
-          # the other's module cache.
-          cache-dependency-path: apps/${{ matrix.service }}/go.sum
+          # the other's module cache. pkg/obs is included because it brings in
+          # the whole OpenTelemetry dependency tree -- the bulk of what there is
+          # to cache -- and a stale key here means re-downloading it every run.
+          cache-dependency-path: |
+            apps/${{ matrix.service }}/go.sum
+            pkg/obs/go.sum
 
       - name: gofmt and vet
         working-directory: apps/${{ matrix.service }}
@@ -190,6 +202,19 @@ jobs:
           go test ./... -race -covermode=atomic -coverprofile=coverage.out
           go tool cover -func=coverage.out | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # The shared library is compiled into this image, so its tests gate this
+      # build. Runs in both matrix jobs; it is a couple of seconds, and the
+      # alternative is a separate job whose failure does not stop the push.
+      - name: test pkg/obs
+        working-directory: pkg/obs
+        run: |
+          set -euo pipefail
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "::error::gofmt found unformatted files in pkg/obs:"; gofmt -l .; exit 1
+          fi
+          go vet ./...
+          go test ./... -race
+
       - uses: docker/setup-buildx-action@v3
 
       # Pushes on PRs too, so opening a pull request produces a previewable
@@ -206,7 +231,15 @@ jobs:
         id: push
         uses: docker/build-push-action@v6
         with:
-          context: apps/${{ matrix.service }}
+          # REPOSITORY ROOT, not apps/<svc>/.
+          #
+          # apps/<svc>/go.mod carries `replace infra-interview/pkg/obs =>
+          # ../../pkg/obs`, and a context rooted at the service directory cannot
+          # see that path -- the build fails inside `go mod download` with a
+          # missing replacement directory. The Dockerfile's COPY paths are
+          # written for this root.
+          context: .
+          file: apps/${{ matrix.service }}/Dockerfile
           # linux/arm64 is MANDATORY -- the colima clusters are aarch64 and an
           # amd64-only image fails with `exec format error` on every pod.
           platforms: linux/amd64,linux/arm64

@@ -1,0 +1,19 @@
+# Previews keep plain Deployments: the Rollout is DELETED from this overlay.
+#
+# Three reasons, in order of severity:
+#
+# 1. workloadRef WOULD BREAK. The appset applies `nameSuffix: -<branch-slug>`,
+#    so the Deployment becomes api-service-<slug>. Kustomize's nameReference
+#    transformer only rewrites well-known fields and has no idea that
+#    spec.workloadRef.name on a CRD is a reference, so the Rollout would keep
+#    pointing at a Deployment name that does not exist -- and then scale nothing
+#    while reporting healthy.
+# 2. The preview's own replicas.yaml patches the Deployment, which is correct
+#    for a preview and wrong under a Rollout.
+# 3. A 25%-then-pause canary on a single-replica throwaway stack serving one
+#    developer is theatre. The purpose of a preview is to look at the change.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: placeholder # replaced by the patch target selector
+$patch: delete

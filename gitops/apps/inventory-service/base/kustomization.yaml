@@ -9,7 +9,15 @@ namespace: shop
 
 resources:
   - deployment.yaml
+  # The pod template stays on the Deployment above; this only carries rollout
+  # strategy. See rollout.yaml for the measured reason it is not the other way
+  # round.
+  - rollout.yaml
+  - analysis-template.yaml
   - service.yaml
+  # Renders in every environment, including those with no Gateway controller
+  # yet. The gateway-api CRDs are installed everywhere so this stays appliable.
+  - httproute.yaml
   - wait-for-postgres-job.yaml
   # NOTE: no ExternalSecret here on purpose. Each environment composes the
   # credential MODE it wants -- credentials/dynamic for long-lived

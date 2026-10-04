@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Kustomize, not Helm, and that is what orders it correctly.
+#
+# platform-helm carries sync-wave -20 and platform-kustomize carries -10, so the
+# OpenTelemetry Operator (which installs the OpenTelemetryCollector CRD and runs
+# the webhook that admits these objects) is created before the objects
+# themselves. Same reason kyverno-policies and cert-manager-issuers are separate
+# components from their charts.
+#
+# NO `namespace:` TRANSFORMER, deliberately. app-defaults.yaml must land in
+# `shop` -- envFrom resolves a ConfigMap in the POD's namespace -- while
+# everything else belongs in `observability`. A transformer applies to every
+# resource, so it would drag the ConfigMap somewhere no application can see it.
+# Each resource therefore declares its own namespace explicitly.
+
+resources:
+  - rbac.yaml
+  - agent.yaml
+  - gateway.yaml
+  # The node-local Service the applications actually address.
+  - agent-local-service.yaml
+  # The cluster-level endpoint, consumed by every app via envFrom. Lives in
+  # `shop`, which is why the platform AppProject now lists that namespace.
+  - app-defaults.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: otel-collectors
+      app.kubernetes.io/part-of: platform
+    # false: the operator owns the pod selectors on the Deployment and DaemonSet
+    # it creates from these custom resources, and injecting a selector into a CR
+    # it does not expect would be at best ignored.
+    includeSelectors: false

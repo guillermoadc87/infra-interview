@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Kustomize, not Helm, and that is what orders it correctly.
+#
+# The platform-helm appset carries sync-wave -20 and platform-kustomize carries
+# -10, so the Kyverno CHART (which installs the ClusterPolicy CRD) is created
+# before these policies that need it. Getting that ordering for free is the
+# reason the two appsets exist as separate waves, and the reason the policies
+# are a separate component rather than extra files in the Kyverno one.
+namespace: kyverno
+
+resources:
+  - require-pod-hygiene.yaml
+  - disallow-mutable-tags.yaml
+  - require-telemetry-contract.yaml
+  - generate-preview-guardrails.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: kyverno-policies
+      app.kubernetes.io/part-of: platform
+    # ClusterPolicy has no pod selector to keep in sync.
+    includeSelectors: false

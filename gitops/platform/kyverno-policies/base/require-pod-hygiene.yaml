@@ -1,0 +1,71 @@
+# AUDIT, not Enforce -- for now, and deliberately.
+#
+# Every policy in this directory ships in Audit first. Enforcing "must declare
+# resource requests" or "must run as non-root" on day one would reject pods from
+# the charts this platform already depends on: Vault, External Secrets and
+# Postgres do not all set requests, and the official postgres image starts as
+# root before dropping privileges (which is exactly why the apps appset chose
+# PSS `baseline` over `restricted`).
+#
+# The rollout is therefore: ship Audit, read `kubectl get polr -A`, fix or
+# except what it finds, THEN flip validationFailureAction to Enforce per policy.
+# A policy switched on before its reports are clean does not improve security,
+# it teaches people to add exceptions.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pod-hygiene
+  annotations:
+    policies.kyverno.io/title: Require probes and resource requests
+    policies.kyverno.io/category: Reliability
+    policies.kyverno.io/description: >-
+      The application manifests in this repo already do all of this. The policy
+      exists so that something applied OUTSIDE a pull request cannot skip it --
+      CI only sees what arrives through a PR.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-resource-requests
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [shop, "pr-*"]
+      validate:
+        message: >-
+          Every container must declare CPU and memory requests, or the scheduler
+          cannot make a sane placement decision and one pod can starve a node.
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    memory: "?*"
+                    cpu: "?*"
+    - name: require-probes
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [shop, "pr-*"]
+      # A Job's pod is short-lived and has no steady state to probe -- the
+      # wait-for-postgres PreSync gate would fail this rule for no reason.
+      exclude:
+        any:
+          - resources:
+              selector:
+                matchLabels:
+                  batch.kubernetes.io/job-name: "*"
+      validate:
+        message: >-
+          Every container must define readinessProbe and livenessProbe. Without
+          a readiness probe a pod joins the Service before it can serve, which
+          is precisely what maxUnavailable: 0 is supposed to prevent.
+        pattern:
+          spec:
+            containers:
+              - readinessProbe:
+                  periodSeconds: ">0"
+                livenessProbe:
+                  periodSeconds: ">0"

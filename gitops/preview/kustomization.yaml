@@ -61,6 +61,24 @@ patches:
     target:
       kind: Deployment
       name: inventory-service
+  # Previews run plain Deployments -- see remove-rollouts.yaml for why
+  # workloadRef cannot survive the appset's nameSuffix.
+  - path: remove-rollouts.yaml
+    target:
+      kind: Rollout
+      name: api-service
+  - path: remove-rollouts.yaml
+    target:
+      kind: Rollout
+      name: inventory-service
+  - path: remove-analysis-templates.yaml
+    target:
+      kind: AnalysisTemplate
+      name: api-service-success-rate
+  - path: remove-analysis-templates.yaml
+    target:
+      kind: AnalysisTemplate
+      name: inventory-service-success-rate
   # The PreSync gates deadlock in a preview -- see remove-presync-gates.yaml.
   - path: remove-presync-gates.yaml
   - path: remove-presync-gates-inventory.yaml
@@ -109,3 +127,32 @@ replacements:
           name: inventory-service-wait-for-postgres
         fieldPaths:
           - spec.template.spec.containers.[name=wait].env.[name=DB_HOST].value
+
+  # An HTTPRoute's backendRefs.name is a Service reference that kustomize does
+  # NOT know about.
+  #
+  # Same class of gap as DB_HOST above, found the same way: with
+  # nameSuffix: -<slug> the Service becomes api-service-<slug>, while the route
+  # kept pointing at `api-service`. Gateway API reports that as a resolution
+  # failure on the route, so the preview URL returns 500 while every pod is
+  # healthy -- the hardest kind of broken to read.
+  - source:
+      kind: Service
+      name: api-service
+      fieldPath: metadata.name
+    targets:
+      - select:
+          kind: HTTPRoute
+          name: api-service
+        fieldPaths:
+          - spec.rules.0.backendRefs.0.name
+  - source:
+      kind: Service
+      name: inventory-service
+      fieldPath: metadata.name
+    targets:
+      - select:
+          kind: HTTPRoute
+          name: inventory-service
+        fieldPaths:
+          - spec.rules.0.backendRefs.0.name

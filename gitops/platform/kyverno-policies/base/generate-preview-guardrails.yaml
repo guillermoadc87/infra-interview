@@ -1,0 +1,130 @@
+# THE REASON KYVERNO IS HERE RATHER THAN ValidatingAdmissionPolicy.
+#
+# Preview namespaces are created on demand by the pr-preview ApplicationSet, one
+# per pull request, named pr-<branch-slug>. There is no commit in which to add a
+# NetworkPolicy for a namespace that does not exist yet, and no opportunity to
+# label it before the workloads inside it start. A `generate` rule is the only
+# mechanism that reaches them.
+#
+# It closes two gaps the repo documents in prose:
+#
+#   1. ZERO NetworkPolicies anywhere. Any pod could reach any other pod,
+#      including another PR's throwaway Postgres.
+#   2. Preview cost is unbounded -- the pr-preview appset's own comment notes
+#      that previews "accumulate silently until a node runs out of memory".
+#      Argo CD reclaims a preview when its PR closes; nothing bounded a single
+#      preview while it was open.
+#
+# k3s enforces NetworkPolicy out of the box (its kube-router netpol controller
+# is active unless --disable-network-policy), so these are real, not decorative.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: generate-preview-guardrails
+  annotations:
+    policies.kyverno.io/title: Isolate and bound every preview namespace
+    policies.kyverno.io/category: Multi-Tenancy
+spec:
+  # Generate rules do not reject anything, so there is no Audit-first question
+  # here: Audit would simply mean "do nothing".
+  rules:
+    - name: default-deny-ingress
+      match:
+        any:
+          - resources:
+              kinds: [Namespace]
+              names: ["pr-*"]
+      generate:
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: default-deny-ingress
+        namespace: "{{request.object.metadata.name}}"
+        # Keeps the generated object in step with this rule and recreates it if
+        # someone deletes it by hand.
+        synchronize: true
+        data:
+          spec:
+            podSelector: {}
+            policyTypes: [Ingress]
+    - name: allow-same-namespace-and-dns
+      match:
+        any:
+          - resources:
+              kinds: [Namespace]
+              names: ["pr-*"]
+      generate:
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: allow-same-namespace-and-dns
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          spec:
+            podSelector: {}
+            policyTypes: [Ingress, Egress]
+            ingress:
+              # A preview is a complete self-contained stack: its api-service
+              # talks to its own Postgres and nothing outside.
+              - from:
+                  - podSelector: {}
+              # Plus the ingress controller, so the preview URL works at all.
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: traefik
+            egress:
+              - to:
+                  - podSelector: {}
+              # DNS, or every name lookup in the namespace fails and the stack
+              # looks broken for reasons that have nothing to do with the PR.
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: kube-system
+                ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+              # The OTLP agent, so a preview is observable like anything else.
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: observability
+                ports:
+                  - protocol: TCP
+                    port: 4317
+              # Egress to the internet stays OPEN on purpose: a preview pulls
+              # images and a developer may need it to reach a sandbox API.
+              # Locking that down belongs with a real threat model, not here.
+              - to:
+                  - ipBlock:
+                      cidr: 0.0.0.0/0
+                      except:
+                        # Except the cluster's own pod and service ranges, which
+                        # the rules above already govern explicitly. k3s
+                        # defaults: pods 10.42.0.0/16, services 10.43.0.0/16.
+                        - 10.42.0.0/16
+                        - 10.43.0.0/16
+    - name: bound-preview-cost
+      match:
+        any:
+          - resources:
+              kinds: [Namespace]
+              names: ["pr-*"]
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: preview-quota
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          spec:
+            hard:
+              # Sized for the full preview stack -- two Go services plus a
+              # Postgres -- with headroom, on a node that also runs the platform
+              # layer. The point is a ceiling, not a tight fit.
+              requests.cpu: "1"
+              requests.memory: 1Gi
+              limits.memory: 2Gi
+              pods: "12"

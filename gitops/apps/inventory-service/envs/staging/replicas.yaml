@@ -1,6 +1,14 @@
 # CONFIG CATEGORY 2 — Kubernetes settings. Never promoted.
-apiVersion: apps/v1
-kind: Deployment
+#
+# Targets the ROLLOUT, not the Deployment. Under workloadRef the Rollout owns
+# the replica count and scales the Deployment to zero, so a replicas patch on
+# the Deployment would be a file that looks authoritative and does nothing --
+# the same defect the `images:` comment in kustomization.yaml warns about.
+#
+# A scalar patch on a CRD is safe. It is LIST fields that kustomize replaces
+# rather than merges when it has no schema; see base/rollout.yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: inventory-service
 spec:

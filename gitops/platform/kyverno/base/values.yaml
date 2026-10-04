@@ -1,0 +1,79 @@
+# Kyverno: move the repo's guarantees from CI into the admission path.
+#
+# This repository's whole thesis is that a guarantee should be structural rather
+# than a convention -- config category 3 lives physically outside envs/ so a
+# promotion CANNOT reach it. CI extends that to the manifests, with six gates
+# that fail a pull request for an unpinned tag or a stray image field.
+#
+# But CI only sees what arrives through a pull request. `kubectl apply` by hand,
+# a Helm chart's defaults, an operator creating a pod -- none of those pass
+# through it. Kyverno is where the same rules get enforced against the API
+# server, which is the only place that sees everything.
+#
+# It also does something CI structurally cannot: GENERATE. A preview namespace
+# is created on demand by the pr-preview ApplicationSet, so there is no commit
+# in which to add its NetworkPolicy and no moment at which to label it first.
+# A generate rule is the only mechanism that reaches those namespaces. That is
+# why Kyverno and not Kubernetes' built-in ValidatingAdmissionPolicy, which is
+# CEL-based, needs no pods at all, and can only validate.
+fullnameOverride: kyverno
+
+# The admission controller is in the request path for every create and update.
+admissionController:
+  replicas: 1
+  # Ignore, NOT Fail.
+  #
+  # With failurePolicy: Fail, a Kyverno outage becomes a CLUSTER outage -- no pod
+  # can be created while the webhook is unreachable. On a 2-CPU node that is a
+  # realistic event, not a theoretical one, and the policies here are
+  # guardrails against mistakes rather than a security boundary holding back an
+  # attacker. A security-critical policy would be worth the opposite trade, and
+  # should say so where it is defined.
+  webhookConfiguration:
+    failurePolicy: Ignore
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 384Mi
+
+# Required for `generate` rules -- it is what actually creates the NetworkPolicy
+# and ResourceQuota in each new preview namespace.
+backgroundController:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+
+# Required for Audit mode to mean anything: this controller writes the
+# PolicyReports that `kubectl get polr -A` shows. Every policy here ships in
+# Audit first, so switching this off would make that rollout invisible.
+reportsController:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# OFF. It exists to run ClusterCleanupPolicy (time-based deletion of resources),
+# which nothing here declares -- previews are reclaimed by Argo CD's
+# preserveResourcesOnDeletion: false instead. One fewer pod on the tightest node
+# in the repo.
+cleanupController:
+  enabled: false
+
+# Grafana dashboards and PrometheusRules shipped by the chart assume a
+# Prometheus Operator, which this platform deliberately does not run -- metrics
+# go through OpenTelemetry (see gitops/platform/otel-gateway). Kyverno's own
+# metrics are exposed on its metrics port and can be scraped by the collector
+# later; a ServiceMonitor here would just fail to apply for want of the CRD.
+grafana:
+  enabled: false
+prometheusRule:
+  enabled: false

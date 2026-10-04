@@ -1,0 +1,48 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The Gateway API CRDs, pinned to a release.
+#
+# These are NOT bundled by the Traefik chart -- it renders a Gateway and a
+# GatewayClass and assumes the kinds already exist. Nothing else in the cluster
+# provides them either: k3s ships Traefik but not the Gateway API.
+#
+#
+# k3s ALREADY SHIPS GATEWAY API CRDs, which matters on a pre-existing cluster.
+#
+# Its packaged traefik manifest (/var/lib/rancher/k3s/server/manifests/traefik.yaml)
+# declares TWO HelmCharts -- `traefik-crd` and `traefik` -- and the first
+# installs Gateway API v1.3.0, standard channel. Verified on a running dev
+# cluster: the CRDs carry
+#   app.kubernetes.io/managed-by: Helm
+#   meta.helm.sh/release-name: traefik-crd
+#
+# --disable=traefik removes that whole manifest file, so BOTH go away and a
+# cluster created by scripts/cluster-up.sh has no Gateway API CRDs until this
+# component installs them. That is the intended state.
+#
+# On a cluster that predates the flag, deleting only the `traefik` HelmChart --
+# which is what the first version of this note said -- leaves traefik-crd and
+# its v1.3.0 CRDs in place, Helm-owned. This component pins v1.6.2, so Argo CD
+# would then try to take over CRDs another manager owns and the sync fails on a
+# server-side-apply field conflict. Delete both:
+#
+#   kubectl -n kube-system delete helmchart traefik traefik-crd
+#
+# Note that removing traefik-crd deletes the CRDs, and with them any Gateway or
+# HTTPRoute object in the cluster. On a dev cluster that is a non-event; it is
+# still the reason recreating the cluster is the cleaner path.
+#
+# A remote URL rather than a vendored copy. The standard channel is ~2 MB of
+# generated YAML; committing it would bury every future diff, and the version is
+# already pinned right here, which is the property that actually matters.
+# Argo CD's repo-server and CI both already reach github.com, so this adds no
+# new network dependency.
+#
+# INSTALLED IN EVERY ENVIRONMENT, while Traefik itself is dev-only. CRDs cost
+# zero pods, and gitops/apps/*/base/ declares an HTTPRoute -- so staging and
+# prod need the kinds to exist for those overlays to render and apply at all.
+# The routes sit there inert until a controller is promoted to watch them, which
+# then needs no application change.
+resources:
+  - https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml

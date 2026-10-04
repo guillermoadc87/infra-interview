@@ -1,0 +1,38 @@
+# CONFIG CATEGORY 2 — Kubernetes settings. Never promoted.
+#
+# Opts this environment into a real canary with automated abort. base/rollout.yaml
+# ships NO steps (an ordinary rolling update) because prod cannot host a canary:
+# one replica on a 2-CPU node, and not enough traffic to judge one.
+#
+# `steps` is a LIST, so this patch REPLACES the empty list from base rather than
+# merging into it -- which for once is exactly what is wanted. See
+# base/rollout.yaml for where that same behaviour is a hazard.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: api-service
+spec:
+  strategy:
+    canary:
+      maxSurge: 1
+      maxUnavailable: 0
+      steps:
+        # 25% first, then hold. The pause is what gives the analysis below a
+        # window to observe; without it the rollout would complete before any
+        # metric existed.
+        - setWeight: 25
+        - pause: {duration: 60s}
+        - setWeight: 50
+        - pause: {duration: 60s}
+        - setWeight: 100
+      analysis:
+        templates:
+          - templateName: api-service-success-rate
+        args:
+          - name: service-name
+            value: api-service
+        # Runs ALONGSIDE the steps from the beginning, rather than as a blocking
+        # gate between them. A background analysis that fails aborts the rollout
+        # at whatever step it has reached, which is the behaviour that matters:
+        # the abort should not wait for the next pause to end.
+        startingStep: 1

@@ -4,16 +4,29 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync/atomic"
+	"syscall"
 	"time"
+
+	// The ONLY observability import permitted outside pkg/obs. CI fails the
+	// build if anything under apps/ imports go.opentelemetry.io directly --
+	// see the "observability goes through pkg/obs" gate in gitops-validate.yml.
+	"infra-interview/pkg/obs"
 
 	_ "github.com/lib/pq"
 )
+
+// Logger is the process logger: structured JSON on stdout for `kubectl logs`,
+// and OTLP log records carrying trace_id/span_id for the backend. Assigned once
+// here so every call site is a plain Logger.X and nothing reaches for the
+// standard log package, which would bypass both.
+var Logger = obs.Logger()
 
 // Set at build time with -ldflags "-X main.version=<sha>". This is what makes a
 // deployment verifiable end to end: /healthz reports the exact commit serving
@@ -77,7 +90,8 @@ func envIntOr(key string, fallback int) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 0 {
-		log.Printf("warning: %s=%q is not a non-negative integer, using %d", key, v, fallback)
+		Logger.Warn("value is not a non-negative integer; using the fallback",
+			"key", key, "value", v, "fallback", fallback)
 		return fallback
 	}
 	return n
@@ -86,6 +100,18 @@ func envIntOr(key string, fallback int) int {
 func main() {
 	cfg := loadSettings()
 
+	// Telemetry first, so even the start-up path is instrumented. With
+	// OTEL_EXPORTER_OTLP_ENDPOINT unset this is a no-op, which is what keeps
+	// `go run` and `go test` working with no collector anywhere.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	shutdownTelemetry, err := obs.Init(ctx, obs.Service{Name: "api-service", Version: version})
+	if err != nil {
+		Logger.Error("could not initialise observability", "error", err.Error())
+		os.Exit(1)
+	}
+
 	connStr := fmt.Sprintf("host=%s port=5432 user=%s password=%s dbname=%s sslmode=disable",
 		envOr("DB_HOST", "postgres"),
 		envOr("DB_USER", "postgres"),
@@ -93,11 +119,16 @@ func main() {
 		envOr("DB_NAME", "orders"),
 	)
 
-	// sql.Open does not dial, so this cannot fail for connectivity reasons.
-	var err error
-	db, err = sql.Open("postgres", connStr)
+	// Does not dial, so this cannot fail for connectivity reasons.
+	//
+	// obs.OpenDB, not sql.Open: every query gets a span and the connection pool
+	// gets metrics. The pool metrics earn their keep here because Vault mints a
+	// new database role every 45 minutes, so connection churn is normal and
+	// worth being able to see.
+	db, err = obs.OpenDB("postgres", connStr)
 	if err != nil {
-		log.Fatalf("invalid database configuration: %v", err)
+		Logger.Error("invalid database configuration", "error", err.Error())
+		os.Exit(1)
 	}
 
 	// Connect in the BACKGROUND and start serving immediately.
@@ -116,16 +147,71 @@ func main() {
 	mux.HandleFunc("/orders", handleOrders(cfg))
 	mux.HandleFunc("/orders/", handleOrderByID)
 
-	log.Printf("api-service version=%s env=%s starting on :%s (order limit %d, payments %s, log %s)",
-		version, cfg.environment, cfg.port, cfg.featureOrderLim, cfg.paymentsURL, cfg.logLevel)
-	log.Fatal(http.ListenAndServe(":"+cfg.port, mux))
+	Logger.Info("starting",
+		"service", "api-service", "version", version, "env", cfg.environment,
+		"port", cfg.port, "order_limit", cfg.featureOrderLim,
+		"payments_url", cfg.paymentsURL, "log_level", cfg.logLevel)
+
+	// A real http.Server with graceful shutdown, replacing
+	// log.Fatal(http.ListenAndServe(...)).
+	//
+	// log.Fatal calls os.Exit, which skips every deferred function -- so the
+	// final batch of spans, metrics and logs, usually the interesting ones,
+	// would never be flushed. Draining in-flight requests on SIGTERM also
+	// matters to the rollout strategy: maxUnavailable: 0 only guarantees a pod
+	// is READY before the old one goes away, not that the old one finishes what
+	// it was already doing.
+	srv := &http.Server{
+		Addr:              ":" + cfg.port,
+		Handler:           obs.Middleware(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	serveErr := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+			return
+		}
+		serveErr <- nil
+	}()
+
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			Logger.Error("server stopped unexpectedly", "error", err.Error())
+			flush(shutdownTelemetry)
+			os.Exit(1)
+		}
+	case <-ctx.Done():
+		Logger.Info("shutting down")
+	}
+
+	drain, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(drain); err != nil {
+		Logger.Error("graceful shutdown failed", "error", err.Error())
+	}
+	flush(shutdownTelemetry)
+}
+
+// flush gives the telemetry pipelines their own deadline, separate from the
+// drain above: a collector that has gone away must not hold the pod in
+// Terminating until the kubelet force-kills it.
+func flush(shutdown obs.ShutdownFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := shutdown(ctx); err != nil {
+		Logger.Warn("telemetry did not flush cleanly", "error", err.Error())
+	}
 }
 
 func connectWithRetry() {
 	backoff := time.Second
 	for attempt := 1; ; attempt++ {
 		if err := initDB(); err != nil {
-			log.Printf("database not ready (attempt %d): %v; retrying in %s", attempt, err, backoff)
+			Logger.Warn("database not ready; retrying",
+				"attempt", attempt, "error", err.Error(), "retry_in", backoff.String())
 			time.Sleep(backoff)
 			if backoff < 30*time.Second {
 				backoff *= 2
@@ -133,7 +219,7 @@ func connectWithRetry() {
 			continue
 		}
 		dbReady.Store(true)
-		log.Printf("database ready after %d attempt(s)", attempt)
+		Logger.Info("database ready", "attempts", attempt)
 		return
 	}
 }
@@ -210,7 +296,7 @@ func handleSummary(cfg settings) http.HandlerFunc {
 		}
 		var count int
 		if err := db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM orders").Scan(&count); err != nil {
-			internalError(w, "counting orders", err)
+			internalError(w, r, "counting orders", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -247,7 +333,7 @@ func listOrders(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.QueryContext(r.Context(),
 		"SELECT id, product_id, quantity, customer_id, status, created_at FROM orders ORDER BY created_at DESC LIMIT 100")
 	if err != nil {
-		internalError(w, "listing orders", err)
+		internalError(w, r, "listing orders", err)
 		return
 	}
 	defer rows.Close()
@@ -256,13 +342,13 @@ func listOrders(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var o Order
 		if err := rows.Scan(&o.ID, &o.ProductID, &o.Quantity, &o.CustomerID, &o.Status, &o.CreatedAt); err != nil {
-			internalError(w, "scanning order", err)
+			internalError(w, r, "scanning order", err)
 			return
 		}
 		orders = append(orders, o)
 	}
 	if err := rows.Err(); err != nil {
-		internalError(w, "iterating orders", err)
+		internalError(w, r, "iterating orders", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, orders)
@@ -302,7 +388,7 @@ func createOrder(w http.ResponseWriter, r *http.Request, cfg settings) {
 		req.ProductID, req.Quantity, req.CustomerID, "pending",
 	).Scan(&orderID)
 	if err != nil {
-		internalError(w, "creating order", err)
+		internalError(w, r, "creating order", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]int{"order_id": orderID})
@@ -325,7 +411,7 @@ func getOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		internalError(w, "fetching order", err)
+		internalError(w, r, "fetching order", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, o)
@@ -334,7 +420,11 @@ func getOrder(w http.ResponseWriter, r *http.Request) {
 // internalError logs the detail and returns a generic message. The original
 // code passed err.Error() straight to the client, leaking schema and connection
 // details to anyone who could provoke a failure.
-func internalError(w http.ResponseWriter, action string, err error) {
-	log.Printf("error %s: %v", action, err)
+func internalError(w http.ResponseWriter, r *http.Request, action string, err error) {
+	// ErrorContext, not Error: the context carries the active span, so the log
+	// record is stamped with trace_id/span_id and the failing request is one
+	// click away from its own trace in the backend. Logging without the context
+	// still works and is simply unlinkable, which is the hard thing to debug.
+	Logger.ErrorContext(r.Context(), "request failed", "action", action, "error", err.Error())
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }

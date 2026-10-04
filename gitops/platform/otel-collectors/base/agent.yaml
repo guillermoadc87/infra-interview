@@ -1,0 +1,118 @@
+# TIER 1 of 3 -- the node-local agent, as an OpenTelemetryCollector.
+#
+#   app SDK (pkg/obs)  ->  THIS (DaemonSet)  ->  otel-gateway  ->  hub backend
+#
+# Responsibility: everything only knowable near the node. It enriches every
+# span, metric and log with Kubernetes metadata and scrapes the local kubelet.
+# Both scale with node count, which is why they belong in a DaemonSet rather
+# than in the gateway.
+#
+# On a single-node k3s VM this is one pod and the tier looks redundant. It is
+# not redundant, it is CORRECTLY SHAPED: the split keeps the design right at ten
+# nodes, and the gateway genuinely cannot do this work (see gateway.yaml for why
+# tail sampling cannot be per-node).
+#
+# NOTE the component names: this collector build uses otlp_grpc, k8s_attributes
+# and kubelet_stats -- the current spellings. The older otlp / k8sattributes /
+# kubeletstats are what most examples online still show.
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-agent
+  namespace: observability
+spec:
+  mode: daemonset
+  serviceAccount: otel-agent
+  # Inherits the contrib image pinned on the operator
+  # (manager.collectorImage), so the distribution is chosen in exactly one
+  # place. The k8s distribution would not do -- it has no prometheus exporter,
+  # which the gateway needs.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "${env:MY_POD_IP}:4317"
+          http:
+            endpoint: "${env:MY_POD_IP}:4318"
+      kubelet_stats:
+        auth_type: serviceAccount
+        # The node this pod runs on. The operator injects K8S_NODE_NAME.
+        endpoint: "https://${env:K8S_NODE_NAME}:10250"
+        # The kubelet serves a certificate for its own hostname, which the
+        # cluster CA does not sign. Verifying it would need the kubelet's CA
+        # wired in; this is a metrics read over the node's own loopback-equivalent
+        # path, so it is the standard configuration rather than a shortcut.
+        insecure_skip_verify: true
+        collection_interval: 30s
+        metric_groups: [node, pod, container]
+
+      # NO filelog OR hostmetrics RECEIVER, deliberately.
+      #
+      # Both need hostPath mounts, and the platform Kustomize appset stamps
+      # pod-security.kubernetes.io/enforce: baseline onto every namespace it
+      # creates -- and PSS baseline FORBIDS hostPath. Enabling either means
+      # carving out a privileged namespace for one workload.
+      #
+      # Application logs arrive over OTLP from pkg/obs instead, which is what
+      # makes that shared library load-bearing rather than decorative. The
+      # honest cost: workloads NOT instrumented with it -- postgres, Vault --
+      # contribute no logs. Collecting those is a conscious
+      # privileged-namespace decision, not something to switch on by accident.
+
+    processors:
+      # First on purpose: under memory pressure the collector must shed data
+      # rather than be OOMKilled, because a dead collector loses everything in
+      # flight instead of the newest batch.
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      k8s_attributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.node.name
+            - k8s.deployment.name
+      batch: {}
+
+    exporters:
+      # Everything goes to the gateway. The agent makes no routing or sampling
+      # decision of its own -- those are cluster-wide concerns, one tier up.
+      #
+      # The operator names a collector's Service "<cr-name>-collector", hence
+      # otel-gateway-collector and not otel-gateway. That rename is why the
+      # applications' OTEL_EXPORTER_OTLP_ENDPOINT and the Rollouts
+      # AnalysisTemplate address both had to change when the collectors moved
+      # from Helm releases to custom resources.
+      otlp_grpc:
+        endpoint: otel-gateway-collector.observability.svc.cluster.local:4317
+        tls:
+          insecure: true
+        retry_on_failure:
+          enabled: true
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8s_attributes, batch]
+          exporters: [otlp_grpc]
+        metrics:
+          receivers: [otlp, kubelet_stats]
+          processors: [memory_limiter, k8s_attributes, batch]
+          exporters: [otlp_grpc]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, k8s_attributes, batch]
+          exporters: [otlp_grpc]

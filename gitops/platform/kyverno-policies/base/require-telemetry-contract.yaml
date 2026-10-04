@@ -1,0 +1,76 @@
+# The third layer of the observability standard.
+#
+# pkg/obs sets the standard in CODE: one way to get a tracer, semconv metric
+# names, resource attributes assembled in one place. CI enforces the BOUNDARY:
+# nothing under apps/ may import go.opentelemetry.io directly. Neither can do
+# anything about a workload that simply never points at a collector -- it starts
+# fine, serves traffic fine, and is invisible.
+#
+# This closes that: a pod in `shop` with no OTLP endpoint is a pod nobody can
+# see, and the canary analysis that gates a rollout would have no metrics to
+# judge. Silence looks identical to health.
+#
+# UPDATED WHEN THE ENDPOINT MOVED TO A ConfigMap, and the update is the
+# interesting part. The first version of this policy checked
+#
+#   spec.containers[].env[name=OTEL_EXPORTER_OTLP_ENDPOINT].value
+#
+# which was correct while every service carried the endpoint as a literal env
+# entry. Switching to `envFrom` broke it instantly and in the worst direction:
+# envFrom is resolved by the kubelet at container start, so the variable does
+# NOT appear in the pod spec at all, and the policy would have reported every
+# single application pod as non-compliant. In Audit mode that is a wall of false
+# positives; had it been in Enforce it would have blocked the entire `shop`
+# namespace.
+#
+# Worth recording because it is the general hazard with pod-spec policies: they
+# assert the SHAPE of configuration, not its effect, so any legitimate change in
+# how a value is supplied looks identical to the value being missing.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-telemetry-contract
+  annotations:
+    policies.kyverno.io/title: Application pods must be observable
+    policies.kyverno.io/category: Observability
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-otlp-endpoint
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [shop]
+      # PreSync gate Jobs are short-lived and intentionally uninstrumented.
+      exclude:
+        any:
+          - resources:
+              selector:
+                matchLabels:
+                  batch.kubernetes.io/job-name: "*"
+      validate:
+        message: >-
+          Containers in `shop` must receive OTEL_EXPORTER_OTLP_ENDPOINT -- either
+          from the cluster's `otel-defaults` ConfigMap via envFrom (the normal
+          path, set in base/deployment.yaml) or as an explicit env entry. pkg/obs
+          treats an unset endpoint as "telemetry disabled": correct for
+          `go test`, wrong for a cluster, and indistinguishable from a healthy
+          service that simply never reports.
+        # anyPattern, because there are two legitimate ways to supply it and a
+        # single pattern would force one of them.
+        anyPattern:
+          # The normal path: inherited from the cluster-level ConfigMap.
+          - spec:
+              containers:
+                - envFrom:
+                    - configMapRef:
+                        name: otel-defaults
+          # The override path: an explicit entry, which also WINS over envFrom
+          # on a key collision.
+          - spec:
+              containers:
+                - env:
+                    - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                      value: "?*"
