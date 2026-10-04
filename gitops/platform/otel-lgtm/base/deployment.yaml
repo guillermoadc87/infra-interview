@@ -21,7 +21,7 @@ kind: Deployment
 metadata:
   name: otel-lgtm
 spec:
-  # ZERO, AND THAT IS NOT A MISTAKE. Set to 1 after resizing the hub VM.
+  # ONE, now that the hub has been resized to 8 GiB.
   #
   # Deploying this at 1 replica took the hub DOWN. Measured after the fact:
   #
@@ -51,7 +51,7 @@ spec:
   # bounded so an unreachable backend drops telemetry rather than growing.
   # What is lost while this is 0 is Grafana -- the viewing surface, not the
   # pipeline.
-  replicas: 0
+  replicas: 1
   strategy:
     # Recreate, not RollingUpdate: a single ReadWriteOnce PVC cannot be mounted
     # by an old and a new pod at once, so a rolling update would deadlock with

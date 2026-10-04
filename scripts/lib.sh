@@ -9,7 +9,23 @@ warn()  { printf "${YELLOW}warning:${NC} %s\n" "$*" >&2; }
 die()   { printf "${RED}error:${NC} %s\n" "$*" >&2; exit 1; }
 
 HUB_PROFILE="hub"
-SPOKE_PROFILES=(dev staging prod)
+# staging was REMOVED from the running fleet to free memory for the hub, and
+# nothing in gitops/ changed to make that happen -- which is the label contract
+# doing its job. Deleting the `cluster-staging` Secret on the hub pruned its 9
+# Applications automatically, because every appset selects clusters by an `env`
+# label rather than from a list.
+#
+# The staging OVERLAYS are deliberately still in the repo: they are the
+# definition of the environment, and they generate nothing while no cluster
+# carries env=staging. Re-adding it is `./scripts/cluster-up.sh staging` plus
+# `./scripts/register-spoke.sh staging`, with no manifest change at all.
+#
+# ONE THING TO KNOW: .github/workflows/promote.yml still enforces the ladder
+# dev -> staging -> prod and resolves each tag FROM GIT, so promoting to prod
+# still works mechanically -- it reads envs/staging/kustomization.yaml, which
+# exists. What it no longer means is that the artifact was ever RUN on a staging
+# cluster. The gate is now a bookkeeping step, not a test.
+SPOKE_PROFILES=(dev prod)
 ALL_PROFILES=("$HUB_PROFILE" "${SPOKE_PROFILES[@]}")
 
 # Pinned. See docs/ for why these exact versions.
