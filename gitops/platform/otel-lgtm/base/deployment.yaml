@@ -21,7 +21,37 @@ kind: Deployment
 metadata:
   name: otel-lgtm
 spec:
-  replicas: 1
+  # ZERO, AND THAT IS NOT A MISTAKE. Set to 1 after resizing the hub VM.
+  #
+  # Deploying this at 1 replica took the hub DOWN. Measured after the fact:
+  #
+  #   before   3866 MiB used of 3904, 37 MiB available, load average 36.4
+  #            kubectl: "Unable to connect to the server"
+  #   after    1772 MiB used, 2132 MiB available, load falling
+  #            (difference is this one pod)
+  #
+  # The hub's Argo CD baseline -- server, repo-server, application-controller,
+  # applicationset-controller, redis, dex, notifications, image-updater -- is
+  # about 1.7 GiB of a 4 GiB VM. Four databases in one container on top of that
+  # does not fit, and the failure mode is the control plane becoming
+  # unreachable, which is the worst possible thing to lose.
+  #
+  # MY ERROR, and a specific one: dev's headroom was measured before adding to
+  # it, the hub's never was. "The hub is the only VM with room" was inferred
+  # from the spokes being smaller rather than from looking.
+  #
+  # The fix is a bigger hub, not a smaller backend: four databases genuinely
+  # need ~1.5 GiB, and trimming the limit just trades an unreachable API server
+  # for an OOMKill loop. scripts/cluster-up.sh now defaults the hub to 8 GiB, so
+  # a RECREATED hub has room. Flipping this to 1 is the deliberate opt-in once
+  # that has happened.
+  #
+  # Nothing else depends on it: the collectors keep running, the spoke-local
+  # Prometheus keeps gating canaries, and the gateway's send queue to the hub is
+  # bounded so an unreachable backend drops telemetry rather than growing.
+  # What is lost while this is 0 is Grafana -- the viewing surface, not the
+  # pipeline.
+  replicas: 0
   strategy:
     # Recreate, not RollingUpdate: a single ReadWriteOnce PVC cannot be mounted
     # by an old and a new pod at once, so a rolling update would deadlock with
