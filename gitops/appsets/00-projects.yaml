@@ -45,6 +45,11 @@ spec:
       namespace: cert-manager
     - server: "*"
       namespace: opentelemetry-operator-system
+    # Deliberately its own, and deliberately empty: the gateway-api component is
+    # all cluster-scoped resources, and pointing it at `platform` made two
+    # Applications fight over that Namespace object.
+    - server: "*"
+      namespace: gateway-api
     # `shop` is an APPLICATION namespace, and the platform layer writes exactly
     # one object into it: the otel-defaults ConfigMap that carries the cluster's
     # OTLP endpoint (gitops/platform/otel-collectors/base/app-defaults.yaml).
