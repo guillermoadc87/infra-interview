@@ -96,6 +96,23 @@ spec:
     # The policies in gitops/platform/kyverno-policies.
     - group: kyverno.io
       kind: ClusterPolicy
+    # The Gateway API release bundle is NOT only CRDs.
+    #
+    # v1.6.2's standard-install.yaml also ships a ValidatingAdmissionPolicy
+    # (`safe-upgrades.gateway.networking.k8s.io`) and its binding, which guard
+    # against a downgrade silently dropping fields. Missed when this list was
+    # extended, because the component was checked by counting CRDs rather than
+    # by enumerating everything cluster-scoped in it -- and the first sync
+    # failed with "resource admissionregistration.k8s.io:ValidatingAdmissionPolicy
+    # is not permitted in project platform".
+    #
+    # Which is the allowlist working exactly as intended: a component wanting
+    # new cluster-level power gets a loud, reviewable rejection rather than
+    # silent permission.
+    - group: admissionregistration.k8s.io
+      kind: ValidatingAdmissionPolicy
+    - group: admissionregistration.k8s.io
+      kind: ValidatingAdmissionPolicyBinding
     # The self-signed root and CA issuer in
     # gitops/platform/cert-manager-issuers. ClusterIssuer is cluster-scoped by
     # design: the OpenTelemetry Operator's webhook Certificate lives in its own
