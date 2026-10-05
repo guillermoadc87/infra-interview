@@ -3,8 +3,8 @@ module api-service
 go 1.26.0
 
 require (
-	github.com/lib/pq v1.10.9
 	infra-interview/pkg/obs v0.0.0
+	infra-interview/pkg/pgcreds v0.0.0
 )
 
 require (
@@ -16,6 +16,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
+	github.com/lib/pq v1.10.9 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/bridges/otelslog v0.21.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0 // indirect
@@ -49,3 +50,5 @@ require (
 //   - a change under pkg/obs/ changes this image, so ci.yml's change detection
 //     has to match pkg/obs/ as well as apps/api-service/.
 replace infra-interview/pkg/obs => ../../pkg/obs
+
+replace infra-interview/pkg/pgcreds => ../../pkg/pgcreds

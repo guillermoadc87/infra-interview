@@ -2,6 +2,7 @@ package obs
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 
 	"github.com/XSAM/otelsql"
@@ -36,4 +37,25 @@ func OpenDB(driverName, dsn string) (*sql.DB, error) {
 		Logger().Warn("could not register database pool metrics", "error", fmt.Sprint(err))
 	}
 	return db, nil
+}
+
+// OpenDBConnector is OpenDB for a caller that supplies its own driver.Connector
+// rather than a DSN string.
+//
+// It exists for pkg/pgcreds, whose connector re-reads the credential from a
+// mounted Secret on every connection so that a Vault rotation needs no restart.
+// A DSN is a fixed string and cannot express that, which is precisely how the
+// credential went stale in the first place.
+//
+// Instrumentation is identical to OpenDB's: the point of routing both through
+// here is that a span and the pool metrics do not depend on which way the
+// connection was configured.
+func OpenDBConnector(c driver.Connector) *sql.DB {
+	attrs := otelsql.WithAttributes(attribute.String("db.system", "postgresql"))
+
+	db := otelsql.OpenDB(c, attrs)
+	if _, err := otelsql.RegisterDBStatsMetrics(db, attrs); err != nil {
+		Logger().Warn("could not register database pool metrics", "error", fmt.Sprint(err))
+	}
+	return db
 }

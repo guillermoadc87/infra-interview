@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,8 +17,7 @@ import (
 	// build if anything under apps/ imports go.opentelemetry.io directly --
 	// see the "observability goes through pkg/obs" gate in gitops-validate.yml.
 	"infra-interview/pkg/obs"
-
-	_ "github.com/lib/pq"
+	"infra-interview/pkg/pgcreds"
 )
 
 // Logger is the process logger: structured JSON on stdout for `kubectl logs`,
@@ -100,22 +98,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	connStr := fmt.Sprintf("host=%s port=5432 user=%s password=%s dbname=%s sslmode=disable",
-		envOr("DB_HOST", "postgres"),
-		envOr("DB_USER", "postgres"),
-		envOr("DB_PASSWORD", "postgres"),
-		envOr("DB_NAME", "inventory"),
-	)
-
-	// obs.OpenDB, not sql.Open: every query gets a span and the connection pool
-	// gets metrics. The pool metrics earn their keep here because Vault mints a
-	// new database role every 45 minutes, so connection churn is normal and
-	// worth being able to see.
-	db, err = obs.OpenDB("postgres", connStr)
+	// CREDENTIALS FROM A MOUNTED FILE, re-read on every connection.
+	// See api-service/main.go for the failure this replaces: env vars are read
+	// once at container start, so a Vault rotation only took effect on a pod
+	// restart that nothing was able to perform.
+	creds, err := pgcreds.New(pgcreds.Config{
+		Dir:      envOr("DB_CRED_DIR", "/var/run/secrets/db"),
+		Host:     envOr("DB_HOST", "postgres"),
+		Port:     envOr("DB_PORT", "5432"),
+		Database: envOr("DB_NAME", "inventory"),
+		SSLMode:  envOr("DB_SSLMODE", "disable"),
+	})
 	if err != nil {
-		Logger.Error("invalid database configuration", "error", err.Error())
+		Logger.Error("database credentials are not readable", "error", err.Error())
 		os.Exit(1)
 	}
+
+	// obs.OpenDBConnector, not obs.OpenDB: a DSN string is fixed for the life of
+	// the pool, which is how the credential went stale. Every query still gets a
+	// span and the pool still reports metrics.
+	db = obs.OpenDBConnector(creds)
+
+	// Forces the pool to recycle onto the credential currently on disk; reading
+	// per connection does nothing for a connection already open with the old
+	// role. See pkg/pgcreds.
+	db.SetConnMaxLifetime(pgcreds.MaxConnLifetime)
 
 	// Serve immediately; connect in the background. See api-service/main.go for
 	// why this matters for pod start ordering.

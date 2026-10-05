@@ -18,8 +18,7 @@ import (
 	// build if anything under apps/ imports go.opentelemetry.io directly --
 	// see the "observability goes through pkg/obs" gate in gitops-validate.yml.
 	"infra-interview/pkg/obs"
-
-	_ "github.com/lib/pq"
+	"infra-interview/pkg/pgcreds"
 )
 
 // Logger is the process logger: structured JSON on stdout for `kubectl logs`,
@@ -112,24 +111,42 @@ func main() {
 		os.Exit(1)
 	}
 
-	connStr := fmt.Sprintf("host=%s port=5432 user=%s password=%s dbname=%s sslmode=disable",
-		envOr("DB_HOST", "postgres"),
-		envOr("DB_USER", "postgres"),
-		envOr("DB_PASSWORD", "postgres"),
-		envOr("DB_NAME", "orders"),
-	)
-
-	// Does not dial, so this cannot fail for connectivity reasons.
+	// CREDENTIALS FROM A MOUNTED FILE, re-read on every connection.
 	//
-	// obs.OpenDB, not sql.Open: every query gets a span and the connection pool
-	// gets metrics. The pool metrics earn their keep here because Vault mints a
-	// new database role every 45 minutes, so connection churn is normal and
-	// worth being able to see.
-	db, err = obs.OpenDB("postgres", connStr)
+	// They used to be DB_USER/DB_PASSWORD environment variables, which are read
+	// once at container start -- so a Vault rotation only took effect if
+	// something restarted the pod. Nothing could: Reloader restarts a workload by
+	// patching its pod template, and under the Rollout's workloadRef that
+	// template is on a Deployment scaled to zero while the Rollout itself has
+	// none. The pod kept a credential Vault had already revoked and every request
+	// failed with "pq: permission denied", while the pod stayed Running and Ready.
+	//
+	// Kubernetes updates a mounted Secret's files in place, so the credential on
+	// disk is always current and the restart is simply not needed.
+	creds, err := pgcreds.New(pgcreds.Config{
+		Dir:      envOr("DB_CRED_DIR", "/var/run/secrets/db"),
+		Host:     envOr("DB_HOST", "postgres"),
+		Port:     envOr("DB_PORT", "5432"),
+		Database: envOr("DB_NAME", "orders"),
+		SSLMode:  envOr("DB_SSLMODE", "disable"),
+	})
 	if err != nil {
-		Logger.Error("invalid database configuration", "error", err.Error())
+		Logger.Error("database credentials are not readable", "error", err.Error())
 		os.Exit(1)
 	}
+
+	// obs.OpenDBConnector, not obs.OpenDB: a DSN string is fixed for the life of
+	// the pool, which is exactly how the credential went stale. The connector
+	// reads it per connection instead. Every query still gets a span and the
+	// pool still reports metrics.
+	db = obs.OpenDBConnector(creds)
+
+	// The other half of the rotation design. Reading the credential per
+	// CONNECTION does nothing for a connection already open with the old role --
+	// that one keeps working until Vault revokes it and then starts failing
+	// mid-request. Capping the lifetime forces the pool to recycle onto whatever
+	// is currently on disk.
+	db.SetConnMaxLifetime(pgcreds.MaxConnLifetime)
 
 	// Connect in the BACKGROUND and start serving immediately.
 	//
