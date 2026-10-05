@@ -23,6 +23,34 @@ installCRDs: true
 
 controller:
   replicas: 1
+
+  # LEADER ELECTION OFF, because there is exactly one replica.
+  #
+  # It was crashlooping: 20 restarts, each a CLEAN exit (code 0, "Exiting Main
+  # Run function"), preceded by
+  #
+  #   failed to renew lease argo-rollouts/argo-rollouts-controller-lock:
+  #   context deadline exceeded
+  #   error retrieving resource lock ...: client rate limiter Wait returned an
+  #   error: context deadline exceeded
+  #
+  # That is the controller behaving correctly: an instance that cannot prove it
+  # still holds leadership must stop acting, so it exits and lets the next one
+  # take over. On a single-node k3s whose API server was saturated during the
+  # platform rollout, lease renewals missed the default 10s deadline and the
+  # controller took itself down repeatedly -- while Rollouts went unreconciled,
+  # which is how stale ReplicaSets from an aborted canary were left behind.
+  #
+  # With replicas: 1 the election protects against nothing: there is no second
+  # instance it could be racing. It is pure overhead plus a liveness hazard
+  # whose trigger is API latency, which a laptop cluster has plenty of.
+  #
+  # Raising the timings was the alternative and is the WRONG fix here -- it makes
+  # the window bigger without removing the failure mode, and would need revisiting
+  # every time the node gets busy. Restore this (and prefer longer deadlines) if
+  # the controller is ever scaled above one replica.
+  extraArgs:
+    - --leader-elect=false
   resources:
     requests:
       cpu: 50m
