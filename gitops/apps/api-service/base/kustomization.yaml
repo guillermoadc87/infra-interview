@@ -21,6 +21,10 @@ resources:
   # environments, credentials/static for previews -- rather than base
   # shipping one and overlays deleting it.
 
+# Without this the labels below never reach the Rollout's pod template.
+configurations:
+  - kustomizeconfig.yaml
+
 labels:
   - pairs:
       app: api-service

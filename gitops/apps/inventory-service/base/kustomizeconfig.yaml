@@ -1,0 +1,17 @@
+# Teaches kustomize where a Rollout keeps its pod template.
+#
+# The `labels:` transformer in kustomization.yaml stamps pod-template labels
+# from a BUILT-IN list of kinds (Deployment, StatefulSet, Job, ...). A Rollout
+# is a CRD, so it is not on that list: its metadata.labels got the common
+# labels but spec.template.metadata.labels silently did not. The Service
+# selects on all three labels, so it matched no pods and every request 503'd
+# (dev, after #19 moved the template off the Deployment and onto the Rollout).
+#
+# spec/selector/matchLabels is deliberately NOT listed. The selector only has
+# to be a subset of the template labels, `app` already is, and rewriting the
+# selector of a live Rollout would orphan the ReplicaSets it already owns.
+commonLabels:
+  - path: spec/template/metadata/labels
+    group: argoproj.io
+    kind: Rollout
+    create: true
