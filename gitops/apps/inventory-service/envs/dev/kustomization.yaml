@@ -21,6 +21,9 @@ patches:
   - path: rollout-strategy.yaml
   # CATEGORY 4 — non-static business settings. PROMOTED as a verbatim file copy.
   - path: settings.yaml
+    target:
+      kind: Rollout
+      name: inventory-service
 
 # CATEGORY 1 — application version. PROMOTED.
 #

@@ -21,29 +21,12 @@ kind: Rollout
 metadata:
   name: api-service
 spec:
-  # spec.replicas is DELIBERATELY ABSENT, exactly as on the Deployment.
-  # Owner: envs/<env>/replicas.yaml (config category 2). Note that with
-  # workloadRef the ROLLOUT owns the replica count -- the Deployment is scaled
-  # to zero -- which is why that patch now targets this kind.
-  # Bound the ReplicaSet history.
-  #
-  # Argo CD's Application has revisionHistoryLimit: 5, but that governs ARGO's
-  # sync history, not the workload's ReplicaSets -- a Rollout keeps 10 by
-  # default and a Deployment likewise. Prod had accumulated HUNDREDS of empty
-  # ReplicaSets, because inventory-service there is pinned to a placeholder tag
-  # that can never pull, so every reconcile over 48 days left another one
-  # behind. They hold no pods and no resources, but they make `get rs`
-  # unreadable and they are a symptom worth not having.
-  revisionHistoryLimit: 3
-  workloadRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: api-service
-    # Scale the Deployment to zero once the Rollout is serving. 'onsuccess'
-    # rather than 'never' so there is no window where both controllers own a
-    # replica set, and not 'progressively' because at one replica that would
-    # mean a moment with no pods at all.
-    scaleDown: onsuccess
+  # spec.replicas is DELIBERATELY ABSENT.
+  # Owner: envs/<env>/replicas.yaml (config category 2). If it were set here,
+  # every environment would inherit a number that only one of them wants.
+  selector:
+    matchLabels:
+      app: api-service
   strategy:
     canary:
       # NO STEPS BY DEFAULT, so this behaves as an ordinary rolling update.
@@ -55,3 +38,86 @@ spec:
       steps: []
       maxSurge: 1
       maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: api-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: api-service
+        image: ghcr.io/guillermoadc87/api-service
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: otel-defaults
+            optional: true
+        env:
+        - name: PORT
+          value: '8080'
+        - name: K8S_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: K8S_NAMESPACE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: K8S_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: DB_HOST
+          value: postgres.platform.svc.cluster.local
+        - name: DB_NAME
+          value: orders
+        - name: DB_CRED_DIR
+          value: /var/run/secrets/db
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 5
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 6
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: db-credentials
+          mountPath: /var/run/secrets/db
+          readOnly: true
+      volumes:
+      - name: db-credentials
+        secret:
+          secretName: api-service-db

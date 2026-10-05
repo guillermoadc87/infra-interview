@@ -1,21 +1,26 @@
 # A preview is non-prod by definition, so it gets sandbox endpoints and the
 # permissive business limits. ENVIRONMENT says "preview" rather than "dev" so a
 # developer can tell at a glance which stack they are hitting.
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: api-service
-spec:
-  template:
-    spec:
-      containers:
-        - name: api-service
-          env:
-            - name: ENVIRONMENT
-              value: preview
-            - name: PAYMENTS_URL
-              value: https://payments.sandbox.example.com
-            - name: LOG_LEVEL
-              value: debug
-            - name: FEATURE_ORDER_LIMIT
-              value: "100"
+# JSON 6902, because the workload is a Rollout and kustomize has no schema for a
+# CRD -- a strategic-merge patch would REPLACE the env list and leave the
+# container with nothing else. See gitops/apps/*/base/rollout.yaml.
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: ENVIRONMENT
+    value: preview
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: PAYMENTS_URL
+    value: https://payments.sandbox.example.com
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: LOG_LEVEL
+    value: debug
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: FEATURE_ORDER_LIMIT
+    value: '100'

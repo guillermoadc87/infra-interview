@@ -3,3 +3,6 @@ kind: Component
 
 patches:
   - path: business-settings.yaml
+    target:
+      kind: Rollout
+      name: api-service

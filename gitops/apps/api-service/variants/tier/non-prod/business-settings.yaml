@@ -4,17 +4,22 @@
 # environment it is. They are NEVER promoted: there is no file under envs/ that
 # names PAYMENTS_URL, so no promotion operation can move the sandbox payment
 # endpoint into production. That is a structural guarantee, not a convention.
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: api-service
-spec:
-  template:
-    spec:
-      containers:
-        - name: api-service
-          env:
-            - name: PAYMENTS_URL
-              value: https://payments.sandbox.example.com
-            - name: LOG_LEVEL
-              value: debug
+# CONVERTED TO JSON 6902 when the workload became a Rollout.
+#
+# A strategic-merge patch needs an OpenAPI schema to know that `env` merges by
+# `name`. Kustomize has none for a CRD, so it REPLACES the list instead -- a
+# patch like this one would leave the container with only these variables and no
+# image, ports, probes or resources. Measured, not assumed.
+#
+# A JSON patch needs no schema: `/env/-` appends. Same effect as before, and the
+# reason the Deployment could finally be deleted.
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: PAYMENTS_URL
+    value: https://payments.sandbox.example.com
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: LOG_LEVEL
+    value: debug

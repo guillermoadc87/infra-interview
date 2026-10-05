@@ -3,3 +3,6 @@ kind: Component
 
 patches:
   - path: env-identity.yaml
+    target:
+      kind: Rollout
+      name: inventory-service

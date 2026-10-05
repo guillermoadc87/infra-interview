@@ -1,16 +1,18 @@
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: inventory-service
-spec:
-  template:
-    spec:
-      containers:
-        - name: inventory-service
-          env:
-            - name: ENVIRONMENT
-              value: preview
-            - name: LOG_LEVEL
-              value: debug
-            - name: LOW_STOCK_THRESHOLD
-              value: "10"
+# JSON 6902, because the workload is a Rollout and kustomize has no schema for a
+# CRD -- a strategic-merge patch would REPLACE the env list and leave the
+# container with nothing else. See gitops/apps/*/base/rollout.yaml.
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: ENVIRONMENT
+    value: preview
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: LOG_LEVEL
+    value: debug
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: LOW_STOCK_THRESHOLD
+    value: '10'

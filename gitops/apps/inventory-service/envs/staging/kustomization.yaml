@@ -17,6 +17,9 @@ patches:
   # which cannot host one -- see base/rollout.yaml.
   - path: rollout-strategy.yaml
   - path: settings.yaml
+    target:
+      kind: Rollout
+      name: inventory-service
 
 # CATEGORY 1 — see envs/dev/kustomization.yaml for why this is the sole owner.
 images:

@@ -15,7 +15,13 @@ components:
 patches:
   - path: replicas.yaml # CATEGORY 2
   - path: resources.yaml # CATEGORY 2 — prod-only; dev/staging inherit base
+    target:
+      kind: Rollout
+      name: api-service
   - path: settings.yaml # CATEGORY 4
+    target:
+      kind: Rollout
+      name: api-service
 
 # CATEGORY 1. Note: prod carries NO Image Updater annotations (see the apps
 # ApplicationSet templatePatch), so this value only ever changes via the gated

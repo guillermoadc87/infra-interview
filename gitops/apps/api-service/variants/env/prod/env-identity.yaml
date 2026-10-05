@@ -1,13 +1,15 @@
 # CONFIG CATEGORY 3 — environment identity. See variants/env/dev/env-identity.yaml.
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: api-service
-spec:
-  template:
-    spec:
-      containers:
-        - name: api-service
-          env:
-            - name: ENVIRONMENT
-              value: prod
+# CONVERTED TO JSON 6902 when the workload became a Rollout.
+#
+# A strategic-merge patch needs an OpenAPI schema to know that `env` merges by
+# `name`. Kustomize has none for a CRD, so it REPLACES the list instead -- a
+# patch like this one would leave the container with only these variables and no
+# image, ports, probes or resources. Measured, not assumed.
+#
+# A JSON patch needs no schema: `/env/-` appends. Same effect as before, and the
+# reason the Deployment could finally be deleted.
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: ENVIRONMENT
+    value: prod
