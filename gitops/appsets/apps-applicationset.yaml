@@ -44,6 +44,16 @@ spec:
         app.kubernetes.io/name: "{{index .path.segments 2}}"
         app.kubernetes.io/part-of: shop
         env: "{{index .path.segments 4}}"
+      annotations:
+        # Diff against a server-side dry-run apply, not Argo CD's local model.
+        #
+        # Locally, Argo CD only knows the API-server defaults of BUILT-IN kinds.
+        # For CRDs it does not, so every defaulted field was a permanent diff
+        # that no sync could clear: `protocol: TCP` on the Rollout's container
+        # ports, and `group`/`kind`/`weight` on the HTTPRoute refs. Asking the
+        # API server applies the real defaults (CRD schema included) before
+        # comparing. Mutating webhooks stay excluded, which is the default.
+        argocd.argoproj.io/compare-options: ServerSideDiff=true
       finalizers:
         - resources-finalizer.argocd.argoproj.io
     spec:

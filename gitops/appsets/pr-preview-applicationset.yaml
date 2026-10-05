@@ -69,6 +69,10 @@ spec:
         env: preview
         pr-number: "{{.number}}"
         branch: "{{.branch_slug}}"
+      annotations:
+        # Same Rollouts and HTTPRoutes as the apps appset, so the same
+        # CRD-default diffs. See apps-applicationset.yaml.
+        argocd.argoproj.io/compare-options: ServerSideDiff=true
       finalizers:
         - resources-finalizer.argocd.argoproj.io
     spec:
