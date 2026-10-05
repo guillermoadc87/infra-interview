@@ -4,38 +4,17 @@
 # express a three-valued fact. Putting it under envs/ instead would place a
 # never-promoted value inside the directory that promotion copies FROM, which is
 # exactly the mistake this layout exists to prevent.
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: api-service
-spec:
-  template:
-    spec:
-      containers:
-        - name: api-service
-          env:
-            - name: ENVIRONMENT
-              value: dev
-            # CATEGORY 3 note: OTEL_EXPORTER_OTLP_ENDPOINT used to live here too,
-            # and it was the one value in this file identical for every service
-            # -- so it was duplicated per service instead of stated once. It now
-            # comes from the `otel-defaults` ConfigMap owned by
-            # gitops/platform/otel-collectors, consumed via envFrom in
-            # base/deployment.yaml.
-            #
-            # The category-3 reasoning is unchanged and in fact stronger: the
-            # collector's address is environment infrastructure that must never
-            # travel with a promotion, and it is now owned by the environment's
-            # own platform layer rather than by a file in the application tree.
-            #
-            # This is an environment's own infrastructure address. It must never
-            # travel with a promotion -- shipping dev's collector endpoint to
-            # prod would point production telemetry at the wrong cluster -- so it
-            # lives here, physically outside envs/, where promotion cannot reach
-            # it.
-            #
-            # Its ABSENCE is also the feature flag. Only dev runs collectors, and
-            # pkg/obs treats an unset endpoint as "telemetry disabled" rather
-            # than an error, so staging and prod keep working with no telemetry
-            # and no connection-refused noise. Promoting the collectors to
-            # another environment means adding this one line to that variant.
+# CONVERTED TO JSON 6902 when the workload became a Rollout.
+#
+# A strategic-merge patch needs an OpenAPI schema to know that `env` merges by
+# `name`. Kustomize has none for a CRD, so it REPLACES the list instead -- a
+# patch like this one would leave the container with only these variables and no
+# image, ports, probes or resources. Measured, not assumed.
+#
+# A JSON patch needs no schema: `/env/-` appends. Same effect as before, and the
+# reason the Deployment could finally be deleted.
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: ENVIRONMENT
+    value: dev

@@ -8,10 +8,7 @@ kind: Kustomization
 namespace: shop
 
 resources:
-  - deployment.yaml
-  # The pod template stays on the Deployment above; this only carries rollout
-  # strategy. See rollout.yaml for the measured reason it is not the other way
-  # round.
+  # THE workload. There is no Deployment any more -- see rollout.yaml.
   - rollout.yaml
   - analysis-template.yaml
   - service.yaml

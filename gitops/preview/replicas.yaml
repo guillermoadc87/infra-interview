@@ -1,6 +1,6 @@
 # Previews are single-developer: one replica. N open PRs multiply this footprint.
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: placeholder # replaced by the patch target selector
 spec:

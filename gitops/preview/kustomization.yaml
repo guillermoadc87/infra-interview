@@ -45,32 +45,26 @@ patches:
   # one developer.
   - path: replicas.yaml
     target:
-      kind: Deployment
+      kind: Rollout
       name: api-service
   - path: replicas.yaml
     target:
-      kind: Deployment
+      kind: Rollout
       name: inventory-service
   # A preview is non-prod by definition: sandbox endpoints, permissive limits,
   # and ENVIRONMENT=preview so a developer can tell which stack they are hitting.
   - path: preview-settings.yaml
     target:
-      kind: Deployment
+      kind: Rollout
       name: api-service
   - path: preview-settings-inventory.yaml
     target:
-      kind: Deployment
-      name: inventory-service
-  # Previews run plain Deployments -- see remove-rollouts.yaml for why
-  # workloadRef cannot survive the appset's nameSuffix.
-  - path: remove-rollouts.yaml
-    target:
-      kind: Rollout
-      name: api-service
-  - path: remove-rollouts.yaml
-    target:
       kind: Rollout
       name: inventory-service
+  # Previews now run the Rollout like every other environment. They could not
+  # before: workloadRef made the Rollout point at a Deployment by name, and the
+  # appset's nameSuffix renamed the Deployment without rewriting that reference.
+  # With the template on the Rollout itself there is nothing left to dangle.
   - path: remove-analysis-templates.yaml
     target:
       kind: AnalysisTemplate
@@ -106,12 +100,12 @@ replacements:
       fieldPath: metadata.name
     targets:
       - select:
-          kind: Deployment
+          kind: Rollout
           name: api-service
         fieldPaths:
           - spec.template.spec.containers.[name=api-service].env.[name=DB_HOST].value
       - select:
-          kind: Deployment
+          kind: Rollout
           name: inventory-service
         fieldPaths:
           - spec.template.spec.containers.[name=inventory-service].env.[name=DB_HOST].value
