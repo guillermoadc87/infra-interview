@@ -112,10 +112,12 @@ jobs:
           fi
           echo "no direct OpenTelemetry imports under apps/" >> "$GITHUB_STEP_SUMMARY"
 
-          # And the library must stay independently testable -- it is the one
-          # place the standard is defined, so a break there is a break
-          # everywhere.
-          ( cd pkg/obs && go build ./... && go vet ./... && go test ./... )
+          # And the shared modules must stay independently testable -- they are
+          # the one place these standards are defined, so a break there is a
+          # break everywhere.
+          for m in pkg/obs pkg/pgcreds; do
+            ( cd "$m" && go build ./... && go vet ./... && go test ./... )
+          done
 
       - name: the image tag has exactly one owner
         shell: bash

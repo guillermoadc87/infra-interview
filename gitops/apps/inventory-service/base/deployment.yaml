@@ -2,17 +2,19 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: inventory-service
-  annotations:
-    # Rotation. Without this, rotating the credential in Vault updates the
-    # Secret within a minute and the running pods keep serving with the OLD
-    # value, because env vars are read once at container start -- so the
-    # rotation silently does not take effect.
-    #
-    # Reloader watches this specific Secret and triggers a normal rolling
-    # update when it changes. Named explicitly rather than using
-    # `reloader.stakater.com/auto`, so it is obvious from this file which
-    # object restarts this workload.
-    secret.reloader.stakater.com/reload: "inventory-service-db"
+  # NO RELOADER ANNOTATION ANY MORE.
+  #
+  # It asked Reloader to restart this workload when the credential Secret
+  # changed. That was both broken and no longer necessary.
+  #
+  # Broken: Reloader restarts a workload by patching its pod template, and under
+  # the Rollout's workloadRef the template lives on a Deployment scaled to zero
+  # while the Rollout itself has none -- adding one drives it Degraded. Its
+  # source only ever writes Spec.Template.Annotations and never spec.restartAt,
+  # so there was no target it could legally use.
+  #
+  # Unnecessary: the credential is now read from a mounted file on every new
+  # connection (pkg/pgcreds), so there is nothing to restart for.
 spec:
   # spec.replicas is DELIBERATELY ABSENT.
   # Owner: envs/<env>/replicas.yaml (config category 2). If it were set here,
@@ -98,24 +100,15 @@ spec:
               value: postgres.platform.svc.cluster.local
             - name: DB_NAME
               value: inventory
-            - name: DB_USER
-              valueFrom:
-                secretKeyRef:
-                  # The USERNAME comes from the Secret too, not just the password.
-                  # Vault's database engine generates a unique role name per lease
-                  # (v-kubernet-inventor-...), so hardcoding `postgres` here meant the
-                  # app kept authenticating as the admin user with a dynamic
-                  # password and failed with "password authentication failed for
-                  # user postgres". Works for the static credential too -- that
-                  # Secret carries `username` as well.
-                  name: inventory-service-db
-                  key: username
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  # Materialised from Vault by base/external-secret.yaml.
-                  name: inventory-service-db
-                  key: password
+            # DB_USER / DB_PASSWORD ARE GONE -- the credential is a mounted
+            # file now. Env vars are read once at container start, so a Vault
+            # rotation only took effect on a pod restart, and nothing was able
+            # to perform one. The pod kept a revoked credential and every
+            # request failed with "pq: permission denied" while it stayed
+            # Running and Ready, because readiness pings the database and a ping
+            # succeeds for a role that can connect but cannot SELECT.
+            - name: DB_CRED_DIR
+              value: /var/run/secrets/db
             # Everything else is environment-scoped and lives elsewhere:
             #   LOW_STOCK_THRESHOLD   -> envs/<env>/settings.yaml         (cat 4, PROMOTED)
             #   LOG_LEVEL             -> variants/tier/<tier>/           (cat 3, never promoted)
@@ -153,3 +146,19 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            # Kubernetes refreshes a mounted Secret's files IN PLACE (kubelet
+            # sync, about a minute), which is the entire reason this needs no
+            # restart. readOnlyRootFilesystem above is unaffected: this is its
+            # own read-only volume.
+            - name: db-credentials
+              mountPath: /var/run/secrets/db
+              readOnly: true
+      volumes:
+        - name: db-credentials
+          secret:
+            # The same Secret as before, materialised from Vault by whichever
+            # credentials/ overlay the environment composes -- dynamic for
+            # long-lived environments, static for previews. Only the delivery
+            # mechanism changed.
+            secretName: inventory-service-db

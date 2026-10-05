@@ -28,12 +28,14 @@ WORKDIR /src
 # loading the shared module's own requirements, so `go mod download` fails if
 # pkg/obs/go.mod is not already in place.
 COPY pkg/obs/go.mod pkg/obs/go.sum ./pkg/obs/
+COPY pkg/pgcreds/go.mod pkg/pgcreds/go.sum ./pkg/pgcreds/
 COPY apps/api-service/go.mod apps/api-service/go.sum ./apps/api-service/
 
 WORKDIR /src/apps/api-service
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY pkg/obs/ /src/pkg/obs/
+COPY pkg/pgcreds/ /src/pkg/pgcreds/
 COPY apps/api-service/ /src/apps/api-service/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
